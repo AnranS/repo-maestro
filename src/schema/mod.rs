@@ -1,6 +1,7 @@
 pub mod artifacts;
 pub mod channel_envelope;
 pub mod permissions;
+pub mod preview;
 pub mod redaction;
 pub mod trajectory;
 
@@ -11,6 +12,7 @@ pub const ARTIFACT_MANIFEST_V1: &str = "maestro.artifact_manifest.v1";
 pub const TRAJECTORY_EVENT_V1: &str = "maestro.trajectory_event.v1";
 pub const CHANNEL_ENVELOPE_V1: &str = "maestro.channel_envelope.v1";
 pub const FINDING_V1: &str = "maestro.finding.v1";
+pub const PLAN_PREVIEW_V1: &str = "maestro.plan_preview.v1";
 
 pub fn provider_capability_version() -> String {
     PROVIDER_CAPABILITY_V1.to_string()
@@ -38,4 +40,8 @@ pub fn channel_envelope_version() -> String {
 
 pub fn finding_version() -> String {
     FINDING_V1.to_string()
+}
+
+pub fn plan_preview_version() -> String {
+    PLAN_PREVIEW_V1.to_string()
 }

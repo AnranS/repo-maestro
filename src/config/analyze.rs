@@ -15,10 +15,13 @@ use super::{Plan, PlanTask, Project, ProjectsConfig, TaskKind};
 #[serde(tag = "severity", rename_all = "lowercase")]
 pub enum Finding {
     Error {
+        /// Stable F-111 issue code (see `crate::schema::preview::codes`).
+        code: &'static str,
         task: Option<String>,
         message: String,
     },
     Warning {
+        code: &'static str,
         task: Option<String>,
         message: String,
     },
@@ -27,6 +30,35 @@ pub enum Finding {
 impl Finding {
     pub fn is_error(&self) -> bool {
         matches!(self, Finding::Error { .. })
+    }
+
+    pub fn code(&self) -> &'static str {
+        match self {
+            Finding::Error { code, .. } | Finding::Warning { code, .. } => code,
+        }
+    }
+
+    /// Project this analyze finding onto the F-111 `Issue` envelope, so
+    /// `plan validate --json` / `work --dry --json` emit one structured shape.
+    pub fn to_issue(&self) -> crate::schema::preview::Issue {
+        use crate::schema::preview::{Issue, IssueSeverity};
+        let (severity, code, task, message) = match self {
+            Finding::Error {
+                code,
+                task,
+                message,
+            } => (IssueSeverity::Error, *code, task, message),
+            Finding::Warning {
+                code,
+                task,
+                message,
+            } => (IssueSeverity::Warning, *code, task, message),
+        };
+        let mut issue = Issue::new(code, severity, message.clone());
+        if let Some(t) = task {
+            issue = issue.at(t.clone());
+        }
+        issue
     }
 }
 
@@ -73,6 +105,7 @@ fn check_unknown_projects(plan: &Plan, projects: &ProjectsConfig) -> Vec<Finding
         }
         if !projects.projects.contains_key(&t.project) {
             out.push(Finding::Error {
+                code: crate::schema::preview::codes::UNKNOWN_PROJECT,
                 task: Some(t.id.clone()),
                 message: format!(
                     "project `{}` not in projects.yaml; run `maestro ls` to see registered projects",
@@ -128,6 +161,7 @@ fn check_shell_syntax(plan: &Plan) -> Vec<Finding> {
                 .collect::<Vec<_>>()
                 .join("; ");
             out.push(Finding::Error {
+                code: crate::schema::preview::codes::SHELL_SYNTAX,
                 task: Some(t.id.clone()),
                 message: format!("shell syntax error: {}", cleaned),
             });
@@ -219,6 +253,7 @@ fn check_contracts(plan: &Plan, projects: &ProjectsConfig) -> Vec<Finding> {
             if !links_back {
                 let prod_list: Vec<&str> = producer_tasks.iter().map(|t| t.id.as_str()).collect();
                 out.push(Finding::Warning {
+                    code: crate::schema::preview::codes::DANGLING_CONTRACT,
                     task: Some(consumer_task.id.clone()),
                     message: format!(
                         "consumer of contract `{}` does not transitively depend on any of its producers ({}); they may race",
@@ -640,6 +675,7 @@ fn check_size(plan: &Plan) -> Vec<Finding> {
         format!("{n} tasks — consider splitting; recommended ≤ {SOFT_CAP} per plan")
     };
     vec![Finding::Warning {
+        code: crate::schema::preview::codes::SIZE_WARNING,
         task: None,
         message,
     }]

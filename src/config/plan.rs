@@ -229,6 +229,18 @@ impl Plan {
         Ok(plan)
     }
 
+    /// Read + parse + expand a plan WITHOUT structural validation. `--json`
+    /// callers use this so they can project each *validation* failure onto its
+    /// own F-111 Issue code (`plan.self_dependency` / `plan.cycle` /
+    /// `plan.task_id_traversal` / …) instead of collapsing everything into a
+    /// single parse error. A failure here is a genuine read/parse failure.
+    pub fn read_only(path: &Path) -> Result<Self> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("read plan file {:?}", path))?;
+        let plan: Self = serde_yaml::from_str(&text).context("parse PLAN.yaml")?;
+        Ok(plan.expand_for_each())
+    }
+
     /// Refuse a plan whose expanded task count exceeds `cap`. A runaway
     /// synthesized/dynamic plan is a bug signal, not a workload — and silent
     /// truncation would drop tasks while reporting success, so this bails
@@ -393,6 +405,56 @@ impl Plan {
         Ok(())
     }
 
+    /// Like `validate()`, but returns the first failure as a coded F-111 `Issue`
+    /// for `--json` callers — stable machine codes for the documented structural
+    /// failures (`plan.self_dependency` / `plan.cycle` / `plan.task_id_traversal`),
+    /// a generic `plan.invalid` otherwise. `None` ⇒ the plan validates.
+    pub fn first_validation_issue(&self) -> Option<crate::schema::preview::Issue> {
+        use crate::schema::preview::{codes, Issue};
+        // Valid plan ⇒ no issue.
+        self.validate().err()?;
+        // There IS a failure — classify it by re-checking the actual condition
+        // (never by string-matching the bail message).
+        for t in &self.tasks {
+            if crate::paths::validate_path_component("task id", &t.id).is_err() {
+                return Some(
+                    Issue::error(
+                        codes::TASK_ID_TRAVERSAL,
+                        "task id is not a safe path component",
+                    )
+                    .at(t.id.clone()),
+                );
+            }
+        }
+        for t in &self.tasks {
+            if t.depends_on.iter().any(|d| d == &t.id) {
+                return Some(
+                    Issue::error(codes::SELF_DEPENDENCY, "task depends on itself").at(t.id.clone()),
+                );
+            }
+        }
+        if detect_dependency_cycle(&self.tasks).is_err() {
+            return Some(Issue::error(
+                codes::CYCLE,
+                "the plan has a dependency cycle",
+            ));
+        }
+        // Any other structural failure (duplicate id, unknown dep, empty prompt,
+        // …) → a generic code with a single-line, neutral message.
+        let message = self
+            .validate()
+            .err()
+            .map(|e| {
+                e.to_string()
+                    .lines()
+                    .next()
+                    .unwrap_or("plan is invalid")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "plan is invalid".to_string());
+        Some(Issue::error(codes::PLAN_INVALID, message))
+    }
+
     pub fn task(&self, id: &str) -> Option<&PlanTask> {
         self.tasks.iter().find(|t| t.id == id)
     }
@@ -494,6 +556,47 @@ tasks:
 
         let err = plan.validate().unwrap_err().to_string();
         assert!(err.contains("invalid task id"));
+    }
+
+    #[test]
+    fn first_validation_issue_classifies_task_id_traversal() {
+        let plan: Plan = serde_yaml::from_str(
+            "spec: bad id\ntasks:\n  - { id: ../escape, project: api, prompt: do it }\n",
+        )
+        .unwrap();
+        let issue = plan.first_validation_issue().expect("a validation issue");
+        assert_eq!(issue.code, crate::schema::preview::codes::TASK_ID_TRAVERSAL);
+        assert_eq!(issue.path.as_deref(), Some("../escape"));
+    }
+
+    #[test]
+    fn first_validation_issue_classifies_self_dependency() {
+        let plan: Plan = serde_yaml::from_str(
+            "spec: self\ntasks:\n  - { id: T_self, project: p, prompt: go, depends_on: [T_self] }\n",
+        )
+        .unwrap();
+        let issue = plan.first_validation_issue().expect("a validation issue");
+        assert_eq!(issue.code, crate::schema::preview::codes::SELF_DEPENDENCY);
+        assert_eq!(issue.path.as_deref(), Some("T_self"));
+    }
+
+    #[test]
+    fn first_validation_issue_classifies_cycle() {
+        let plan: Plan = serde_yaml::from_str(
+            "spec: cyclic\ntasks:\n  - { id: A, project: p, prompt: go, depends_on: [B] }\n  - { id: B, project: p, prompt: go, depends_on: [A] }\n",
+        )
+        .unwrap();
+        let issue = plan.first_validation_issue().expect("a validation issue");
+        assert_eq!(issue.code, crate::schema::preview::codes::CYCLE);
+    }
+
+    #[test]
+    fn first_validation_issue_none_for_valid_plan() {
+        let plan: Plan = serde_yaml::from_str(
+            "spec: ok\ntasks:\n  - { id: T_a, project: p, prompt: go }\n  - { id: T_b, project: p, prompt: go, depends_on: [T_a] }\n",
+        )
+        .unwrap();
+        assert!(plan.first_validation_issue().is_none());
     }
 
     #[test]

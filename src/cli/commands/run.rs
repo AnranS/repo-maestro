@@ -34,7 +34,7 @@ pub async fn run(a: RunArgs) -> Result<()> {
         let report = crate::config::analyze(&plan, &projects);
         if report.has_errors() {
             for f in &report.findings {
-                if let crate::config::Finding::Error { task, message } = f {
+                if let crate::config::Finding::Error { task, message, .. } = f {
                     eprintln!("  ✗ {} {}", task.as_deref().unwrap_or("(plan)"), message);
                 }
             }
@@ -217,10 +217,10 @@ async fn run_live_with_inputs(
         );
         for f in &report.findings {
             match f {
-                crate::config::Finding::Error { task, message } => {
+                crate::config::Finding::Error { task, message, .. } => {
                     eprintln!("  ✗ {} {}", task.as_deref().unwrap_or("(plan)"), message);
                 }
-                crate::config::Finding::Warning { task, message } => {
+                crate::config::Finding::Warning { task, message, .. } => {
                     eprintln!("  ⚠ {} {}", task.as_deref().unwrap_or("(plan)"), message);
                 }
             }

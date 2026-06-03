@@ -712,7 +712,7 @@ pub(crate) fn run_init_discovery_only(a: &InitArgs) {
             Err(_) => return,
         },
     };
-    if let Err(e) = commands::work::discover_and_apply(&root, a.max_depth, &a.agent) {
+    if let Err(e) = commands::work::discover_and_apply(&root, a.max_depth, &a.agent, false) {
         tracing::warn!("init project discovery skipped: {e:#}");
     }
 }
@@ -732,7 +732,7 @@ pub(crate) fn run_init_analysis(a: &InitArgs) -> Result<()> {
         root.display(),
         a.agent
     );
-    commands::work::discover_and_apply(&root, a.max_depth, &a.agent)?;
+    commands::work::discover_and_apply(&root, a.max_depth, &a.agent, false)?;
     let projects = ProjectsConfig::load(&paths::projects_file()?)?;
     if projects.projects.is_empty() {
         println!("→ no projects discovered; register one with `maestro add <path>` or rerun with a different --root");

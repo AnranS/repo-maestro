@@ -16,10 +16,10 @@ use crate::mailbox::{MailDraft, MailboxStore};
 use crate::paths;
 
 pub async fn run(args: DeliberateArgs) -> Result<()> {
-    crate::cli::commands::work::ensure_initialized()?;
+    crate::cli::commands::work::ensure_initialized(false)?;
 
     if let Some(root) = args.root.as_deref() {
-        crate::cli::commands::work::discover_and_apply(root, args.max_depth, &args.agent)?;
+        crate::cli::commands::work::discover_and_apply(root, args.max_depth, &args.agent, false)?;
     }
 
     let spec = std::fs::read_to_string(&args.doc)

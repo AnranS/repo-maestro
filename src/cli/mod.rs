@@ -558,6 +558,12 @@ pub struct WorkArgs {
     #[arg(long)]
     pub dry: bool,
 
+    /// Emit a machine-readable `PlanPreview` JSON on stdout (F-111) for the
+    /// synthesized plan and stop, instead of running. Human detail goes to
+    /// stderr. The dry-first preview for skills / MCP / WebUI.
+    #[arg(long)]
+    pub json: bool,
+
     /// Maximum number of concurrent tasks when using --run or --dry.
     #[arg(long)]
     pub max_parallel: Option<usize>,
@@ -1060,7 +1066,13 @@ pub enum ChatCmd {
 #[derive(Subcommand, Debug)]
 pub enum PlanCmd {
     /// Validate a PLAN.yaml.
-    Validate { plan: PathBuf },
+    Validate {
+        plan: PathBuf,
+        /// Emit a machine-readable `PlanPreview` JSON on stdout (F-111) instead
+        /// of human text; logs / errors go to stderr.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the stable hash used by guarded maestro-action blocks.
     Hash { plan: PathBuf },
 }

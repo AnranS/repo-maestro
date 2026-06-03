@@ -6,27 +6,24 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::util::slugify;
 use crate::cli::PlanCmd;
-use crate::config::{Plan, Project, ProjectsConfig};
+use crate::config::{AnalyzeReport, Plan, Project, ProjectsConfig};
 use crate::paths;
+use crate::schema::preview::{codes, BlastEntry, Edge, Issue, PlanPreview};
 
 pub fn run(c: PlanCmd) -> Result<()> {
     match c {
-        PlanCmd::Validate { plan } => validate(plan),
+        PlanCmd::Validate { plan, json } => validate(plan, json),
         PlanCmd::Hash { plan } => hash(plan),
     }
 }
 
-fn validate(plan_path: std::path::PathBuf) -> Result<()> {
+fn validate(plan_path: std::path::PathBuf, json: bool) -> Result<()> {
+    if json {
+        return validate_json(&plan_path);
+    }
+    // Human path: full load (validates + bails on structural errors), then text.
     let p = Plan::load(&plan_path)?;
-    let projects = paths::projects_file()
-        .ok()
-        .and_then(|f| if f.exists() { Some(f) } else { None })
-        .and_then(|f| ProjectsConfig::load(&f).ok())
-        .unwrap_or_else(|| ProjectsConfig {
-            version: 1,
-            defaults: Default::default(),
-            projects: Default::default(),
-        });
+    let projects = load_projects_or_empty();
     let report = crate::config::analyze(&p, &projects);
     println!("→ {} task(s)", p.tasks.len());
     if report.findings.is_empty() {
@@ -35,10 +32,10 @@ fn validate(plan_path: std::path::PathBuf) -> Result<()> {
     }
     for f in &report.findings {
         match f {
-            crate::config::Finding::Error { task, message } => {
+            crate::config::Finding::Error { task, message, .. } => {
                 println!("  ✗ {} {}", task.as_deref().unwrap_or("(plan)"), message);
             }
-            crate::config::Finding::Warning { task, message } => {
+            crate::config::Finding::Warning { task, message, .. } => {
                 println!("  ⚠ {} {}", task.as_deref().unwrap_or("(plan)"), message);
             }
         }
@@ -52,6 +49,113 @@ fn validate(plan_path: std::path::PathBuf) -> Result<()> {
         std::process::exit(2);
     }
     Ok(())
+}
+
+/// `plan validate --json`: stdout is ALWAYS a valid `PlanPreview`. A read/parse
+/// failure ⇒ `plan.parse_failed`; a *structural* validate failure ⇒ its own code
+/// (`plan.self_dependency` / `plan.cycle` / `plan.task_id_traversal` / …) — and we
+/// do NOT run `analyze` on a structurally-invalid plan (it could choke on a
+/// cyclic one). All human detail (incl. paths) goes to stderr, never the JSON.
+fn validate_json(plan_path: &Path) -> Result<()> {
+    let p = match Plan::read_only(plan_path) {
+        Ok(p) => p,
+        Err(e) => {
+            let preview = PlanPreview::unparseable(Issue::error(
+                codes::PARSE_FAILED,
+                "could not parse PLAN.yaml",
+            ));
+            println!("{}", preview.to_json());
+            eprintln!("plan validate: {e:#}");
+            std::process::exit(2);
+        }
+    };
+    if let Some(issue) = p.first_validation_issue() {
+        let mut preview = plan_preview_core(&p);
+        preview.errors.push(issue);
+        println!("{}", preview.to_json());
+        std::process::exit(2);
+    }
+    // Structurally valid: enrich with analyze findings (unknown_project, …).
+    let report = crate::config::analyze(&p, &load_projects_or_empty());
+    let preview = plan_preview(&p, &report);
+    println!("{}", preview.to_json());
+    if !preview.is_valid() {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+fn load_projects_or_empty() -> ProjectsConfig {
+    paths::projects_file()
+        .ok()
+        .and_then(|f| if f.exists() { Some(f) } else { None })
+        .and_then(|f| ProjectsConfig::load(&f).ok())
+        .unwrap_or_else(|| ProjectsConfig {
+            version: 1,
+            defaults: Default::default(),
+            projects: Default::default(),
+        })
+}
+
+/// Full F-111 `PlanPreview` for a structurally-valid plan + its analyze report
+/// (core + warnings/errors). Shared by `plan validate --json` and
+/// `work --dry --json` and tests.
+pub(crate) fn plan_preview(p: &Plan, report: &AnalyzeReport) -> PlanPreview {
+    let mut preview = plan_preview_core(p);
+    for f in &report.findings {
+        if f.is_error() {
+            preview.errors.push(f.to_issue());
+        } else {
+            preview.warnings.push(f.to_issue());
+        }
+    }
+    preview
+}
+
+/// The structural part of a `PlanPreview` — counts, `depends_on` edges, and the
+/// downstream blast radius. No findings. Single-pass, so safe even on a
+/// structurally-invalid plan.
+fn plan_preview_core(p: &Plan) -> PlanPreview {
+    use std::collections::{BTreeMap, BTreeSet};
+    let projects: BTreeSet<&str> = p.tasks.iter().map(|t| t.project.as_str()).collect();
+    let edges: Vec<Edge> = p
+        .tasks
+        .iter()
+        .flat_map(|t| {
+            t.depends_on.iter().map(move |dep| Edge {
+                from: dep.clone(),
+                to: t.id.clone(),
+                kind: "depends_on".to_string(),
+            })
+        })
+        .collect();
+    let mut downstream: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for t in &p.tasks {
+        for dep in &t.depends_on {
+            downstream
+                .entry(dep.as_str())
+                .or_default()
+                .push(t.id.clone());
+        }
+    }
+    let blast_radius: Vec<BlastEntry> = p
+        .tasks
+        .iter()
+        .filter_map(|t| {
+            downstream.get(t.id.as_str()).map(|ds| BlastEntry {
+                task: t.id.clone(),
+                project: t.project.clone(),
+                downstream: ds.clone(),
+            })
+        })
+        .collect();
+    PlanPreview {
+        project_count: projects.len() as u32,
+        task_count: p.tasks.len() as u32,
+        dependency_edges: edges,
+        blast_radius,
+        ..Default::default()
+    }
 }
 
 fn hash(plan_path: std::path::PathBuf) -> Result<()> {
@@ -69,7 +173,32 @@ pub(crate) fn synthesize_file(
     selected: Vec<String>,
     root_filter: Option<&Path>,
 ) -> Result<PathBuf> {
-    synthesize_file_with_intent(spec, out, selected, SynthesisIntent::Change, root_filter)
+    synthesize_file_with_intent(
+        spec,
+        out,
+        selected,
+        SynthesisIntent::Change,
+        root_filter,
+        false,
+    )
+}
+
+/// Like [`synthesize_file`] but routes the human "goal matched …" line to stderr,
+/// so `work --dry --json` can keep stdout reserved for the `PlanPreview`.
+pub(crate) fn synthesize_file_quiet(
+    spec: &str,
+    out: Option<PathBuf>,
+    selected: Vec<String>,
+    root_filter: Option<&Path>,
+) -> Result<PathBuf> {
+    synthesize_file_with_intent(
+        spec,
+        out,
+        selected,
+        SynthesisIntent::Change,
+        root_filter,
+        true,
+    )
 }
 
 pub(crate) fn synthesize_audit_file(
@@ -77,7 +206,7 @@ pub(crate) fn synthesize_audit_file(
     out: Option<PathBuf>,
     selected: Vec<String>,
 ) -> Result<PathBuf> {
-    synthesize_file_with_intent(spec, out, selected, SynthesisIntent::Audit, None)
+    synthesize_file_with_intent(spec, out, selected, SynthesisIntent::Audit, None, false)
 }
 
 fn synthesize_file_with_intent(
@@ -86,6 +215,7 @@ fn synthesize_file_with_intent(
     selected: Vec<String>,
     intent: SynthesisIntent,
     root_filter: Option<&Path>,
+    quiet: bool,
 ) -> Result<PathBuf> {
     let pfile = paths::projects_file()?;
     if !pfile.exists() {
@@ -201,13 +331,19 @@ fn synthesize_file_with_intent(
             // the multi-hundred-character one-paragraph dump on 50+ project
             // monorepos.
             let dropped_str = format_skipped_list(&dropped, 12);
-            println!(
+            let line = format!(
                 "→ goal matched {}/{} project(s): {}. Skipped (didn't match the goal): {}. Add `--project <id>` to force-include.",
                 kept.len(),
                 all.len(),
                 kept.join(", "),
                 dropped_str,
             );
+            // --json keeps stdout for the PlanPreview; the human line goes to stderr.
+            if quiet {
+                eprintln!("{line}");
+            } else {
+                println!("{line}");
+            }
         }
         relevant
     };
@@ -1164,6 +1300,54 @@ mod tests {
     use crate::config::Contracts;
     use serial_test::serial;
     use tempfile::TempDir;
+
+    #[test]
+    fn plan_preview_has_counts_edges_blast_and_coded_issues() {
+        let p: Plan = serde_yaml::from_str(
+            r#"
+spec: update the shared contract and consumers
+tasks:
+  - { id: T_change_shared_contracts, project: shared-contracts, kind: agent }
+  - { id: T_change_billing_service, project: billing-service, kind: agent, depends_on: [T_change_shared_contracts] }
+  - { id: T_change_web_frontend, project: web-frontend, kind: agent, depends_on: [T_change_shared_contracts] }
+"#,
+        )
+        .unwrap();
+        let cfg: ProjectsConfig = serde_yaml::from_str(
+            r#"
+version: 1
+projects:
+  shared-contracts:
+    path: shared-contracts
+  billing-service:
+    path: billing-service
+"#,
+        )
+        .unwrap();
+        let report = crate::config::analyze(&p, &cfg);
+        let preview = plan_preview(&p, &report);
+
+        assert_eq!(preview.task_count, 3);
+        assert_eq!(preview.project_count, 3);
+        assert_eq!(preview.dependency_edges.len(), 2);
+        let blast = preview
+            .blast_radius
+            .iter()
+            .find(|b| b.task == "T_change_shared_contracts")
+            .expect("shared-contracts has downstream");
+        assert_eq!(blast.downstream.len(), 2);
+        // an unregistered project surfaces as a coded error issue, not prose
+        let unknown = preview
+            .errors
+            .iter()
+            .find(|i| i.code == codes::UNKNOWN_PROJECT)
+            .expect("plan.unknown_project error");
+        assert_eq!(unknown.path.as_deref(), Some("T_change_web_frontend"));
+        assert!(!preview.is_valid());
+        // round-trips through the shared serializer
+        let back: PlanPreview = serde_json::from_str(&preview.to_json()).unwrap();
+        assert_eq!(back, preview);
+    }
 
     #[test]
     fn generic_basenames_are_not_relevance_signals() {

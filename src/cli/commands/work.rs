@@ -13,10 +13,16 @@ use crate::paths;
 const SIGINT_EXIT_CODE: i32 = 130;
 
 pub async fn run(args: WorkArgs) -> Result<()> {
-    ensure_initialized()?;
+    // --json is the dry-first preview: init + discovery run quietly INSIDE
+    // run_json_preview so stdout stays a single PlanPreview JSON object.
+    if args.json {
+        return run_json_preview(args);
+    }
+
+    ensure_initialized(false)?;
 
     if let Some(root) = args.root.as_deref() {
-        discover_and_apply(root, args.max_depth, &args.agent)?;
+        discover_and_apply(root, args.max_depth, &args.agent, false)?;
     }
 
     if args.run && !args.force_new {
@@ -63,7 +69,84 @@ pub async fn run(args: WorkArgs) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn ensure_initialized() -> Result<()> {
+/// `work --dry --json` (F-111): synthesize the plan quietly, then emit ONE
+/// machine-readable `PlanPreview` on stdout — the dry-first preview — and stop.
+/// stdout is ALWAYS a valid `PlanPreview`, even on a synthesis failure (the
+/// problem lands in `errors[]`, the full human error on stderr). Reuses the
+/// shared `plan_preview` serializer; only `goal` / `goal_matched` are
+/// work-dry-specific.
+fn run_json_preview(args: WorkArgs) -> Result<()> {
+    use crate::schema::preview::{codes, Issue, PlanPreview};
+    match build_json_preview(&args) {
+        Ok(preview) => {
+            println!("{}", preview.to_json());
+            Ok(())
+        }
+        Err(e) => {
+            // Contract: `--json` stdout stays a valid PlanPreview envelope even
+            // when synthesis fails. A neutral, path-free message in the issue;
+            // the full human error (paths / "next: --root …" guidance) → stderr.
+            let preview = PlanPreview::unparseable(Issue::error(
+                codes::PLAN_INVALID,
+                "could not synthesize plan preview",
+            ));
+            println!("{}", preview.to_json());
+            eprintln!("work --dry --json: {e:#}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// The fallible body of `work --dry --json`: quiet init + discovery + synthesis,
+/// then the shared `plan_preview` + `goal` / `goal_matched`. Any error is
+/// projected onto a `PlanPreview` envelope by [`run_json_preview`].
+fn build_json_preview(args: &WorkArgs) -> Result<crate::schema::preview::PlanPreview> {
+    use crate::schema::preview::GoalMatched;
+    // Init + discovery run quietly: their progress lines go to stderr so stdout
+    // stays a single PlanPreview JSON object (the F-111 contract).
+    ensure_initialized(true)?;
+    if let Some(root) = args.root.as_deref() {
+        discover_and_apply(root, args.max_depth, &args.agent, true)?;
+    }
+    let plan_path = crate::cli::commands::plan::synthesize_file_quiet(
+        &args.spec,
+        args.out.clone(),
+        args.projects.clone(),
+        args.root.as_deref(),
+    )?;
+    let plan = Plan::load(&plan_path)?;
+    let projects = paths::projects_file()
+        .ok()
+        .and_then(|f| if f.exists() { Some(f) } else { None })
+        .and_then(|f| ProjectsConfig::load(&f).ok())
+        .unwrap_or_else(|| ProjectsConfig {
+            version: 1,
+            defaults: Default::default(),
+            projects: Default::default(),
+        });
+    let report = config::analyze(&plan, &projects);
+    let mut preview = crate::cli::commands::plan::plan_preview(&plan, &report);
+    preview.goal = Some(args.spec.clone());
+    // matched = projects the synthesized plan narrowed to; total = registered
+    // projects. Mirrors the human "goal matched X/Y" line.
+    preview.goal_matched = Some(GoalMatched {
+        matched: preview.project_count,
+        total: projects.projects.len() as u32,
+    });
+    Ok(preview)
+}
+
+/// Print a human progress line to stdout, or to stderr when `quiet` — used by
+/// `--json` paths that must keep stdout reserved for a single JSON object.
+fn emit(quiet: bool, line: String) {
+    if quiet {
+        eprintln!("{line}");
+    } else {
+        println!("{line}");
+    }
+}
+
+pub(crate) fn ensure_initialized(quiet: bool) -> Result<()> {
     let dir = paths::maestro_dir()?;
     paths::ensure_dir(&dir)?;
     paths::ensure_dir(&paths::runs_dir()?)?;
@@ -78,7 +161,7 @@ pub(crate) fn ensure_initialized() -> Result<()> {
             projects: Default::default(),
         }
         .save(&pfile)?;
-        println!("→ initialized {}", dir.display());
+        emit(quiet, format!("→ initialized {}", dir.display()));
     }
 
     let mut seeded = 0usize;
@@ -99,7 +182,10 @@ pub(crate) fn ensure_initialized() -> Result<()> {
         }
     }
     if seeded > 0 {
-        println!("→ seeded {seeded} workflow skill/memory sample(s)");
+        emit(
+            quiet,
+            format!("→ seeded {seeded} workflow skill/memory sample(s)"),
+        );
     }
     Ok(())
 }
@@ -108,6 +194,7 @@ pub(crate) fn discover_and_apply(
     root: &std::path::Path,
     max_depth: usize,
     agent: &str,
+    quiet: bool,
 ) -> Result<()> {
     let mut report = config::discover(root, &config::DiscoverOptions { max_depth })?;
     let discovered = report.projects.len();
@@ -136,21 +223,30 @@ pub(crate) fn discover_and_apply(
     // in the per-edge enumeration below.
     let (promoted_providers, promoted_consumers) =
         config::promote_contracts_with_siblings(&mut report, &sibling_roots);
-    println!(
-        "→ discovered {} project(s), {} manifest-declared edge(s)",
-        discovered,
-        report.edges.len()
+    emit(
+        quiet,
+        format!(
+            "→ discovered {} project(s), {} manifest-declared edge(s)",
+            discovered,
+            report.edges.len()
+        ),
     );
     if promoted_providers > 0 || promoted_consumers > 0 {
-        println!(
-            "→ codegraph: promoted {} project(s) to contract provider(s), {} to consumer(s).",
-            promoted_providers, promoted_consumers,
+        emit(
+            quiet,
+            format!(
+                "→ codegraph: promoted {} project(s) to contract provider(s), {} to consumer(s).",
+                promoted_providers, promoted_consumers,
+            ),
         );
     }
     for edge in &report.edges {
-        println!(
-            "  {} -> {} [{}%] {}",
-            edge.from, edge.to, edge.confidence, edge.reason
+        emit(
+            quiet,
+            format!(
+                "  {} -> {} [{}%] {}",
+                edge.from, edge.to, edge.confidence, edge.reason
+            ),
         );
     }
 
@@ -215,8 +311,11 @@ pub(crate) fn discover_and_apply(
         project.dependencies.dedup();
     }
     if derived_added > 0 {
-        println!(
-            "→ codegraph: folded {derived_added} derived dependency edge(s) into projects.yaml"
+        emit(
+            quiet,
+            format!(
+                "→ codegraph: folded {derived_added} derived dependency edge(s) into projects.yaml"
+            ),
         );
     }
 
@@ -234,11 +333,14 @@ pub(crate) fn discover_and_apply(
         }
     }
 
-    println!(
-        "→ updated {} ({} added, {} replaced)",
-        pfile.display(),
-        added,
-        updated
+    emit(
+        quiet,
+        format!(
+            "→ updated {} ({} added, {} replaced)",
+            pfile.display(),
+            added,
+            updated
+        ),
     );
     Ok(())
 }
@@ -264,10 +366,10 @@ pub(crate) fn validate_generated_plan(plan_path: &std::path::Path) -> Result<()>
     );
     for finding in &report.findings {
         match finding {
-            config::Finding::Error { task, message } => {
+            config::Finding::Error { task, message, .. } => {
                 println!("  ✗ {} {message}", task.as_deref().unwrap_or("(plan)"));
             }
-            config::Finding::Warning { task, message } => {
+            config::Finding::Warning { task, message, .. } => {
                 println!("  ⚠ {} {message}", task.as_deref().unwrap_or("(plan)"));
             }
         }
