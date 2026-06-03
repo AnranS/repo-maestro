@@ -1,0 +1,9 @@
+{
+  "type": "invoice.created",
+  "required": ["invoice_id", "account_id", "region"],
+  "properties": {
+    "invoice_id": "string",
+    "account_id": "string",
+    "region": "string"
+  }
+}

@@ -1,0 +1,68 @@
+name: release
+
+# Cut a release by pushing a tag, e.g.:  git tag v0.1.0 && git push --tags
+# Builds prebuilt binaries (host-native, no cross toolchain) for macOS + Linux,
+# embedding the web UI, and attaches them — plus the install script — to the
+# GitHub Release. Only binaries ship; source isn't part of the artifacts.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+    steps:
+      - uses: actions/checkout@v6
+
+      # The binary embeds web/dist/ via rust-embed, so build the UI first.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: build web (embedded UI)
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: build release binaries
+        run: cargo build --release --locked --target ${{ matrix.target }} --bins
+
+      - name: package
+        run: |
+          dist="maestro-${{ matrix.target }}"
+          mkdir -p "$dist"
+          cp "target/${{ matrix.target }}/release/maestro" "$dist/"
+          cp "target/${{ matrix.target }}/release/mst" "$dist/"
+          cp README.md LICENSE "$dist/" 2>/dev/null || true
+          tar czf "$dist.tar.gz" "$dist"
+
+      # Publish to the PUBLIC dist repo (binaries only) so the source repo stays
+      # private. Needs a repo-scoped PAT in the DIST_TOKEN secret with write to
+      # AnranS/maestro-dist (the default GITHUB_TOKEN can't write another repo).
+      - name: publish to dist repo
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: AnranS/maestro-dist
+          token: ${{ secrets.DIST_TOKEN }}
+          tag_name: ${{ github.ref_name }}
+          files: |
+            maestro-${{ matrix.target }}.tar.gz
+            scripts/install.sh

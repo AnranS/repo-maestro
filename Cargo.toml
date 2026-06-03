@@ -1,0 +1,82 @@
+[package]
+name = "maestro-cli"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "A workflow orchestrator for changes that span many repos — plan a dependency-ordered DAG, run with contract gates and verification, recover on failure. Local-first."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/AnranS/repo-maestro"
+homepage = "https://github.com/AnranS/repo-maestro"
+documentation = "https://github.com/AnranS/repo-maestro#documentation"
+keywords = ["orchestrator", "multi-repo", "dag", "agent", "local-first"]
+categories = ["command-line-utilities", "development-tools"]
+
+[lib]
+name = "maestro"
+path = "src/lib.rs"
+
+[[bin]]
+name = "maestro"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+thiserror = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+shlex = "1"
+petgraph = "0.6"
+axum = "0.7"
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+notify = "6"
+uuid = { version = "1", features = ["v4"] }
+indicatif = "0.17"
+shellexpand = "3"
+# `debug-embed` would force embedding even in `cargo build` (no --release),
+# making iteration on docs/web require re-running cargo every time. We rely on
+# rust-embed's default behavior: serve from disk in debug, embed in release.
+rust-embed = { version = "8" }
+async-stream = "0.3"
+mime_guess = "2"
+dirs = "5"
+globset = "0.4"
+ignore = "0.4"
+libc = "0.2"
+# Interactive TUI (Phase 1 of the claude-code-style chat-tui rewrite).
+# ratatui owns frame rendering; crossterm owns input + terminal mode.
+ratatui = "0.28"
+crossterm = "0.27"
+# Optional local embedding model (ONNX via fastembed) for semantic memory
+# recall. Off by default to keep the standard build + CI light; enable with
+# `--features embeddings`. Memory search falls back to TF-IDF when absent.
+fastembed = { version = "4", optional = true }
+# Optional: read a codegraph index (.codegraph/codegraph.db) for the WebUI code
+# graph. Off by default (bundled SQLite adds C build); enable with
+# `--features codegraph`.
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+
+[features]
+embeddings = ["dep:fastembed"]
+codegraph = ["dep:rusqlite"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[dev-dependencies]
+tempfile = "3"
+axum-test = "16"
+pretty_assertions = "1"
+serial_test = "3"

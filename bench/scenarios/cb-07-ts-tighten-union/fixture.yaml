@@ -1,0 +1,14 @@
+id: cb-07-ts-tighten-union
+kind: contract-break
+goal: "Detect a TypeScript union narrowing that breaks consumers"
+expected:
+  touched_files:
+    - types/index.d.ts
+    - consumer/tsc.sh
+  required_projects: [types, consumer]
+  required_contract_consumers: [consumer]
+  forbidden_files: []
+budget:
+  max_runtime_secs: 60
+  max_tasks: 4
+tools_required: [sh]

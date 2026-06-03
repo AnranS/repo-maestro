@@ -1,0 +1,17 @@
+openapi: 3.0.0
+info:
+  title: Response shape fixture
+  version: 1.0.0
+paths:
+  /v1/orders:
+    get:
+      responses:
+        "200":
+          description: orders
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total:
+                    type: string

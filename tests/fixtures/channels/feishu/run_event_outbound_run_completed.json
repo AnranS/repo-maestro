@@ -1,0 +1,1 @@
+{"event":{"schema_version":"maestro.run_event.v1","event_id":"evt-run-completed","run_id":"run-completed","seq":2,"timestamp":"2026-05-24T07:01:00Z","kind":"run.completed","payload":{"status":"done"}},"entry":{"enabled":true,"transport":"botmux","reply_to_run_events":["run.completed"],"redact_payload_over_kb":1},"options":{"dry_run":false}}

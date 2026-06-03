@@ -1,0 +1,85 @@
+name: Bug report
+description: Something maestro does not do the way the docs / behavior contract say it should.
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill in as
+        much detail as you can — the easier the reproducer, the faster the
+        fix.
+
+  - type: input
+    id: version
+    attributes:
+      label: maestro version / commit
+      description: Output of `maestro --version`, or `git rev-parse HEAD` if running from source.
+      placeholder: "v0.1.0 / commit 19c99c9"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Task backend
+      multiple: true
+      options:
+        - codex
+        - cursor-agent
+        - shell
+        - mock
+        - other / N/A
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 15.5 / Ubuntu 24.04 / ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What you ran
+      description: The exact command (or sequence) that triggered the bug. Include any relevant `.maestro/projects.yaml` or `PLAN.yaml` excerpts.
+      render: bash
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Paste the actual output, error message, or describe the observed behavior.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (optional)
+      description: Relevant excerpts from `.maestro/runs/<run-id>/logs/` or `RUN_STATE.json`. Redact secrets.
+      render: text
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I tested against the latest commit on `main`.
+          required: true

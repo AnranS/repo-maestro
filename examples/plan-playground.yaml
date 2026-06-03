@@ -1,0 +1,104 @@
+spec: "playground — 给 profile 加 nickname 字段，跨 4 端落地"
+created_by: hand
+tasks:
+  # 1) 服务端先改 schema，这是契约源头，跑完后等审批
+  - id: T1_server_schema
+    project: server
+    agent: shell
+    prompt: |
+      set -e
+      cat >> api.yaml <<'YAML'
+
+        nickname:
+          type: string
+          maxLength: 32
+          nullable: true
+      YAML
+      echo "✓ added nickname field to api.yaml"
+    depends_on: []
+    parallel_group: A
+    requires_approval_after: true
+    timeout_minutes: 1
+
+  # 2) 服务端基于新 schema 重新生成 mock
+  - id: T2_mock_update
+    project: server
+    agent: shell
+    prompt: |
+      set -e
+      cat > mock.json <<'JSON'
+      {
+        "profile": {
+          "id": "u_001",
+          "name": "Alice",
+          "nickname": "Ali"
+        }
+      }
+      JSON
+      echo "✓ regenerated mock.json"
+    depends_on: [T1_server_schema]
+    parallel_group: A
+    timeout_minutes: 1
+
+  # 3-5) 三端 UI 并行跟进
+  - id: T3_web_ui
+    project: web
+    agent: shell
+    prompt: |
+      set -e
+      sleep 0.6
+      sed -i.bak 's|{{NICKNAME_PLACEHOLDER}}|<span data-test="nickname">{user.nickname}</span>|' ProfilePage.tsx
+      rm -f ProfilePage.tsx.bak
+      echo "✓ rendered nickname in ProfilePage.tsx"
+    depends_on: [T2_mock_update]
+    parallel_group: B
+    timeout_minutes: 1
+
+  - id: T4_android_ui
+    project: android
+    agent: shell
+    prompt: |
+      set -e
+      sleep 0.9
+      sed -i.bak 's|// NICKNAME_PLACEHOLDER|nicknameView.text = user.nickname|' ProfileFragment.kt
+      rm -f ProfileFragment.kt.bak
+      echo "✓ wired nickname in ProfileFragment.kt"
+    depends_on: [T2_mock_update]
+    parallel_group: B
+    timeout_minutes: 1
+
+  - id: T5_ios_ui
+    project: ios
+    agent: shell
+    prompt: |
+      set -e
+      sleep 0.4
+      sed -i.bak 's|// NICKNAME_PLACEHOLDER|Text(user.nickname ?? "")|' ProfileView.swift
+      rm -f ProfileView.swift.bak
+      echo "✓ wired nickname in ProfileView.swift"
+    depends_on: [T2_mock_update]
+    parallel_group: B
+    timeout_minutes: 1
+
+  # 6) 端到端 verify：所有 4 个文件必须出现 "nickname"
+  - id: T6_verify
+    project: _global
+    kind: verify
+    command: |
+      set -e
+      missing=0
+      for f in test-server/api.yaml test-server/mock.json test-web/ProfilePage.tsx test-android/ProfileFragment.kt test-ios/ProfileView.swift; do
+        if grep -qi "nickname" "$f"; then
+          echo "  ✓ $f"
+        else
+          echo "  ✗ $f (missing nickname)"
+          missing=$((missing + 1))
+        fi
+      done
+      if [ "$missing" -ne 0 ]; then
+        echo "FAILED: $missing file(s) missing nickname"
+        exit 1
+      fi
+      echo "✓ all files contain nickname"
+    depends_on: [T3_web_ui, T4_android_ui, T5_ios_ui]
+    timeout_minutes: 1

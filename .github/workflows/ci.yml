@@ -1,0 +1,93 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same branch so we don't pay for stale CI.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: rust ${{ matrix.toolchain }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The release binary embeds web/dist/ via rust-embed. Build the
+      # frontend first so cargo build (debug or release) finds the assets.
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: install web deps
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: build web
+        working-directory: web
+        run: pnpm build
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      # We run clippy in surface-warning mode for now. There are ~8 pre-existing
+      # style suggestions (manual_map, char-cmp, etc.) we haven't curated yet;
+      # tightening to `-D warnings` will land once they're triaged.
+      - name: cargo clippy
+        run: cargo clippy --all-targets
+
+      - name: cargo test
+        run: cargo test --all-targets
+
+  # Optional features (local embeddings + codegraph SQLite reader) are off by
+  # default to keep the main build light. This job type-checks the
+  # feature-gated code so it can't silently rot between releases.
+  features:
+    name: features (embeddings + codegraph)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # web/dist is embedded via rust-embed; a check still needs it to exist.
+      - run: mkdir -p web/dist && echo '<!doctype html>' > web/dist/index.html
+      - name: cargo check --features embeddings,codegraph
+        run: cargo check --features embeddings,codegraph --all-targets
+
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: install
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: typecheck + build
+        working-directory: web
+        run: pnpm build

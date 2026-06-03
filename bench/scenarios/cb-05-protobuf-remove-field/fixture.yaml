@@ -1,0 +1,14 @@
+id: cb-05-protobuf-remove-field
+kind: contract-break
+goal: "Detect a protobuf field removal that breaks consumer compile"
+expected:
+  touched_files:
+    - producer/schema.proto
+    - consumer/compile.sh
+  required_projects: [producer, consumer]
+  required_contract_consumers: [consumer]
+  forbidden_files: []
+budget:
+  max_runtime_secs: 60
+  max_tasks: 4
+tools_required: [sh]

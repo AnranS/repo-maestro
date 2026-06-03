@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package bench.contracts;
+
+message Invoice {
+  string id = 1;
+  string customer_id = 2;
+  // The lint rule for this fixture treats this field as required.
+  string billing_region = 3;
+}

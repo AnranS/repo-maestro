@@ -1,0 +1,14 @@
+id: cb-08-graphql-deprecate-field
+kind: contract-break
+goal: "Detect GraphQL deprecated field usage in a consumer"
+expected:
+  touched_files:
+    - producer/schema.graphql
+    - consumer/codegen.sh
+  required_projects: [producer, consumer]
+  required_contract_consumers: [consumer]
+  forbidden_files: []
+budget:
+  max_runtime_secs: 60
+  max_tasks: 4
+tools_required: [sh]

@@ -1,0 +1,5 @@
+packages/opencode/src/tool/external-directory.ts
+packages/opencode/src/util/wildcard.ts
+packages/opencode/test/tool/bash.test.ts
+packages/opencode/test/tool/read.test.ts
+packages/opencode/test/util/wildcard.test.ts

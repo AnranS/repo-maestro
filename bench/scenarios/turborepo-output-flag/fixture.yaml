@@ -1,0 +1,17 @@
+id: turborepo-output-flag
+kind: oss-replay
+goal: "fix: Resolve git_root to worktree root in linked worktrees"
+upstream:
+  url: https://github.com/vercel/turborepo
+  parent_sha: e2bc393cecaa0004cc07449ed4df4f35e9de5d1b
+  pr_url: https://github.com/vercel/turborepo/pull/11974
+expected:
+  touched_files:
+    - crates/turborepo-scm/src/package_deps.rs
+    - crates/turborepo-scm/src/worktree.rs
+  required_projects: [turborepo-scm]
+  required_contract_consumers: []
+  forbidden_files: []
+budget:
+  max_runtime_secs: 120
+  max_tasks: 8

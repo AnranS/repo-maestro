@@ -1,0 +1,1 @@
+{"event":{"schema_version":"maestro.run_event.v1","event_id":"evt-evidence","run_id":"run-evidence","seq":5,"timestamp":"2026-05-24T07:05:00Z","kind":"evidence.captured","payload":{"artifact":"report"}},"entry":{"enabled":true,"transport":"botmux","reply_to_run_events":["evidence.captured"],"redact_payload_over_kb":1},"options":{"dry_run":false}}

@@ -1,0 +1,46 @@
+version: 1
+defaults:
+  agent: shell
+  branch_prefix: feat/
+  max_parallel: 4
+projects:
+  demo-core:
+    path: packages/core
+    type: library
+    stack:
+      - node
+      - pnpm
+    commands:
+      test: pnpm test
+      build: pnpm build
+    contracts: {}
+    dependencies: []
+    memory_scope: []
+    agent: shell
+  demo-cli:
+    path: packages/cli
+    type: tool
+    stack:
+      - node
+      - pnpm
+    commands:
+      test: pnpm test
+      build: pnpm build
+    contracts: {}
+    dependencies:
+      - demo-core
+    memory_scope: []
+    agent: shell
+  demo-mobile:
+    path: mobile
+    type: mobile
+    stack:
+      - node
+      - pnpm
+    commands:
+      test: pnpm test
+    contracts: {}
+    dependencies:
+      - demo-core
+    memory_scope: []
+    agent: shell

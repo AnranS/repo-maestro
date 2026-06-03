@@ -1,0 +1,14 @@
+id: cb-06-ts-shared-rename-interface
+kind: contract-break
+goal: "Detect a shared TypeScript interface rename"
+expected:
+  touched_files:
+    - types/index.d.ts
+    - consumer/tsc.sh
+  required_projects: [types, consumer]
+  required_contract_consumers: [consumer]
+  forbidden_files: []
+budget:
+  max_runtime_secs: 60
+  max_tasks: 4
+tools_required: [sh]

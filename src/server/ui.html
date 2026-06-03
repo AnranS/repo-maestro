@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>maestro</title>
+  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose", flowchart: { curve: "basis", padding: 8 } });
+    window.mermaid = mermaid;
+  </script>
+  <style>
+    :root { color-scheme: dark; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .mono, pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    [x-cloak] { display: none !important; }
+    .chat-prose p { margin: 0.5rem 0; }
+    .chat-prose ul, .chat-prose ol { margin: 0.5rem 0; padding-left: 1.25rem; }
+    .chat-prose li { margin: 0.15rem 0; }
+    .chat-prose code { background: rgb(15 23 42); padding: 1px 4px; border-radius: 3px; font-size: 0.85em; }
+    .chat-prose pre { background: rgb(2 6 23); padding: 0.6rem 0.75rem; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; line-height: 1.45; }
+    .chat-prose pre code { background: transparent; padding: 0; }
+    .chat-prose h1, .chat-prose h2, .chat-prose h3 { font-weight: 600; margin: 0.75rem 0 0.4rem; }
+    .chat-prose h1 { font-size: 1.05rem; }
+    .chat-prose h2 { font-size: 0.95rem; }
+    .chat-prose blockquote { border-left: 3px solid rgb(51 65 85); padding-left: 0.6rem; color: rgb(148 163 184); }
+    .scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+    .scroll-thin::-webkit-scrollbar-thumb { background: rgb(51 65 85); border-radius: 4px; }
+    .scroll-thin::-webkit-scrollbar-track { background: transparent; }
+    .dag-svg svg { max-width: 100%; height: auto !important; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div x-data="dashboard()" x-init="init()" class="h-screen flex flex-col">
+
+    <!-- HEADER -->
+    <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur px-6 py-3 flex items-center gap-6">
+      <div class="flex items-baseline gap-3">
+        <h1 class="text-lg font-semibold tracking-tight">maestro</h1>
+        <span class="text-xs text-slate-500" x-text="state.run_id || '—'"></span>
+      </div>
+
+      <div class="flex-1 min-w-0">
+        <p class="text-sm text-slate-300 truncate" x-text="state.spec || '(no active run)'"></p>
+      </div>
+
+      <div class="flex items-center gap-4 text-xs">
+        <template x-for="kv in summary()" :key="kv.label">
+          <div class="flex items-baseline gap-1.5">
+            <span class="text-slate-500" x-text="kv.label"></span>
+            <span class="font-semibold" :class="kv.color" x-text="kv.value"></span>
+          </div>
+        </template>
+
+        <span class="inline-flex items-center gap-1.5 ml-2 px-2 py-0.5 rounded text-xs"
+              :class="connected ? 'bg-emerald-900/40 text-emerald-300' : 'bg-amber-900/40 text-amber-300'">
+          <span class="inline-block w-1.5 h-1.5 rounded-full"
+                :class="connected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'"></span>
+          <span x-text="connected ? 'live' : 'offline'"></span>
+        </span>
+
+        <button @click="chatOpen = !chatOpen" class="px-2 py-1 rounded border border-slate-700 hover:bg-slate-800"
+                :class="chatOpen ? 'bg-slate-800' : ''">
+          chat <span x-text="chat.messages.length ? `(${chat.messages.length})` : ''"></span>
+        </button>
+      </div>
+    </header>
+
+    <!-- BODY (two-column) -->
+    <main class="flex-1 flex min-h-0">
+
+      <!-- LEFT: tasks & DAG -->
+      <section class="flex-1 min-w-0 overflow-y-auto scroll-thin p-6 space-y-6"
+               :class="chatOpen ? 'lg:max-w-[calc(100%-26rem)]' : ''">
+
+        <!-- DAG card -->
+        <div class="bg-slate-900 border border-slate-800 rounded-lg">
+          <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800">
+            <span class="text-xs uppercase tracking-wider text-slate-500">dependency graph</span>
+            <span class="text-xs text-slate-500" x-text="`${orderedTasks().length} tasks · max ${state.max_parallel || 0} parallel`"></span>
+          </div>
+          <div class="p-3">
+            <div id="dag" class="mermaid dag-svg text-sm" x-html="mermaidSrc()"></div>
+          </div>
+        </div>
+
+        <!-- Tasks list -->
+        <div class="bg-slate-900 border border-slate-800 rounded-lg">
+          <div class="px-4 py-2 border-b border-slate-800 flex items-center justify-between">
+            <span class="text-xs uppercase tracking-wider text-slate-500">tasks</span>
+            <span class="text-xs text-slate-500" x-text="state.status || ''"></span>
+          </div>
+          <div class="divide-y divide-slate-800">
+            <template x-for="t in orderedTasks()" :key="t.id">
+              <div>
+                <div class="px-4 py-2.5 flex items-center gap-3 cursor-pointer hover:bg-slate-800/50"
+                     @click="toggle(t.id)">
+                  <span class="w-5 text-center text-base" x-text="icon(t.status)" :class="statusTextColor(t.status)"></span>
+                  <span class="font-mono text-sm flex-1 truncate" x-text="t.id"></span>
+                  <span class="text-xs text-slate-400 hidden sm:inline" x-text="t.project"></span>
+                  <span class="text-xs text-slate-500 hidden sm:inline" x-text="t.agent"></span>
+                  <span x-show="t.kind === 'verify'" class="text-xs px-1.5 py-0.5 rounded bg-purple-900/50 text-purple-300">verify</span>
+                  <span x-show="t.requires_approval_after" class="text-xs px-1.5 py-0.5 rounded bg-amber-900/50 text-amber-300">⏸ gate</span>
+                  <span class="text-xs px-2 py-0.5 rounded" :class="statusClass(t.status)" x-text="t.status"></span>
+                  <span class="text-xs text-slate-500 mono w-14 text-right" x-text="duration(t)"></span>
+                  <template x-if="t.artifacts && t.artifacts.pr_url">
+                    <a :href="t.artifacts.pr_url" target="_blank" @click.stop class="text-xs text-blue-400 underline">PR</a>
+                  </template>
+                  <span class="text-slate-600 w-3 text-right" x-text="open[t.id] ? '▾' : '▸'"></span>
+                </div>
+                <div x-show="open[t.id]" x-cloak class="px-4 pb-3">
+                  <pre class="bg-black/40 rounded p-3 text-xs whitespace-pre-wrap break-words max-h-72 overflow-y-auto scroll-thin"
+                       x-text="logs[t.id] || '(loading…)'"></pre>
+                  <p x-show="t.error" class="text-xs mt-2">
+                    <span class="text-red-400">error:</span>
+                    <span class="text-red-300" x-text="t.error"></span>
+                  </p>
+                </div>
+              </div>
+            </template>
+
+            <div x-show="orderedTasks().length === 0" class="px-4 py-6 text-center text-sm text-slate-500">
+              No active run. Try <code class="bg-slate-800 px-1 rounded">maestro run plan.yaml</code> in a workspace with <code class="bg-slate-800 px-1 rounded">.maestro/</code>.
+            </div>
+          </div>
+        </div>
+
+        <!-- History -->
+        <details class="bg-slate-900 border border-slate-800 rounded-lg">
+          <summary class="cursor-pointer px-4 py-2 text-xs uppercase tracking-wider text-slate-500 hover:text-slate-300">
+            history (<span x-text="runs.length"></span>)
+          </summary>
+          <div class="divide-y divide-slate-800">
+            <template x-for="r in runs" :key="r.run_id">
+              <div class="px-4 py-2 flex items-center gap-3 text-xs">
+                <span class="text-slate-500 mono w-44 truncate" x-text="r.run_id"></span>
+                <span class="w-16" :class="historyClass(r.status)" x-text="r.status"></span>
+                <span class="flex-1 truncate" x-text="r.spec"></span>
+              </div>
+            </template>
+            <div x-show="runs.length === 0" class="px-4 py-3 text-sm text-slate-500">(no runs yet)</div>
+          </div>
+        </details>
+      </section>
+
+      <!-- RIGHT: chat -->
+      <aside x-show="chatOpen" x-cloak
+             class="w-full lg:w-[26rem] border-l border-slate-800 bg-slate-900 flex flex-col min-h-0">
+        <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+          <div>
+            <h2 class="text-sm font-semibold">orchestrator chat</h2>
+            <p class="text-[11px] text-slate-500" x-text="chat.cursor_chat_id ? `cursor session ${chat.cursor_chat_id.slice(0, 12)}…` : 'new session'"></p>
+          </div>
+          <div class="flex gap-2">
+            <button @click="resetChat()" class="text-xs text-slate-400 hover:text-slate-100 px-2 py-1 rounded border border-slate-700">reset</button>
+            <button @click="chatOpen = false" class="text-slate-500 hover:text-slate-200 lg:inline">×</button>
+          </div>
+        </div>
+
+        <div x-ref="chatScroll" class="flex-1 overflow-y-auto scroll-thin p-3 space-y-3">
+          <template x-if="chat.messages.length === 0 && !sending">
+            <div class="text-xs text-slate-500 leading-relaxed">
+              Ask the orchestrator to plan, run, or inspect anything across your registered projects.<br>
+              <span class="block mt-2 text-slate-400">Examples:</span>
+              <ul class="mt-1 ml-3 list-disc text-slate-400 space-y-1">
+                <li>"draft a plan to add archived field to notes"</li>
+                <li>"what tasks are pending approval?"</li>
+                <li>"why did T4_cli_arg fail in the last run?"</li>
+              </ul>
+            </div>
+          </template>
+
+          <template x-for="(m, i) in chat.messages" :key="i">
+            <div :class="m.role === 'user' ? 'flex justify-end' : 'flex justify-start'">
+              <div :class="m.role === 'user'
+                  ? 'max-w-[85%] bg-blue-900/40 border border-blue-800/50 text-slate-100 px-3 py-2 rounded-lg text-sm whitespace-pre-wrap'
+                  : 'max-w-[95%] bg-slate-800 border border-slate-700 text-slate-100 px-3 py-2 rounded-lg text-sm chat-prose'">
+                <template x-if="m.role !== 'user'">
+                  <div x-html="renderMd(m.content)"></div>
+                </template>
+                <template x-if="m.role === 'user'">
+                  <div x-text="m.content"></div>
+                </template>
+              </div>
+            </div>
+          </template>
+
+          <div x-show="sending" class="flex justify-start">
+            <div class="px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-xs text-slate-400">
+              <span class="inline-block animate-pulse">●●●</span> thinking
+            </div>
+          </div>
+        </div>
+
+        <form @submit.prevent="sendChat()" class="border-t border-slate-800 p-3 space-y-2">
+          <textarea x-ref="chatInput"
+                    x-model="draft"
+                    @keydown.enter.prevent="if (!$event.shiftKey) sendChat(); else draft += '\n'"
+                    rows="2"
+                    placeholder="message orchestrator… (enter to send, shift+enter for newline)"
+                    class="w-full resize-none bg-slate-950 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-600"
+                    :disabled="sending"></textarea>
+          <div class="flex items-center justify-between text-xs text-slate-500">
+            <span x-text="sending ? 'sending…' : (chat.cursor_chat_id ? 'resume mode' : 'first message')"></span>
+            <button type="submit" :disabled="sending || !draft.trim()"
+                    class="px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-400">
+              send
+            </button>
+          </div>
+        </form>
+      </aside>
+    </main>
+  </div>
+
+  <script>
+    function dashboard() {
+      return {
+        state: { spec: "", tasks: {}, task_order: [], status: "", run_id: "", max_parallel: 0 },
+        runs: [],
+        connected: false,
+        open: {},
+        logs: {},
+        _logStreams: {},
+
+        chatOpen: window.innerWidth >= 1024,
+        chat: { messages: [], cursor_chat_id: null },
+        draft: "",
+        sending: false,
+
+        init() {
+          this.fetchState();
+          this.fetchRuns();
+          this.fetchChat();
+          this.connect();
+          setInterval(() => this.fetchRuns(), 30000);
+        },
+
+        connect() {
+          const es = new EventSource("/api/events");
+          es.addEventListener("state", (e) => {
+            try { this.update(JSON.parse(e.data)); } catch {}
+            this.connected = true;
+          });
+          es.addEventListener("ping", () => { this.connected = true; });
+          es.onerror = () => { this.connected = false; };
+        },
+
+        async fetchState() {
+          try {
+            const r = await fetch("/api/state");
+            if (r.ok) this.update(await r.json());
+          } catch {}
+        },
+        async fetchRuns() {
+          try {
+            const r = await fetch("/api/runs");
+            if (r.ok) this.runs = await r.json();
+          } catch {}
+        },
+        async fetchChat() {
+          try {
+            const r = await fetch("/api/chat");
+            if (r.ok) this.chat = await r.json();
+          } catch {}
+        },
+
+        update(s) {
+          if (!s || !s.tasks) return;
+          this.state = s;
+          this.$nextTick(() => {
+            const el = document.getElementById("dag");
+            if (el && window.mermaid) {
+              try {
+                el.removeAttribute("data-processed");
+                window.mermaid.run({ nodes: [el] });
+              } catch {}
+            }
+          });
+        },
+
+        orderedTasks() {
+          const order = this.state.task_order || Object.keys(this.state.tasks || {});
+          return order.map((id) => this.state.tasks[id]).filter(Boolean);
+        },
+
+        summary() {
+          const all = this.orderedTasks();
+          const c = (s) => all.filter((t) => t.status === s).length;
+          return [
+            { label: "running", value: c("running"), color: "text-blue-400" },
+            { label: "done", value: c("done"), color: "text-emerald-400" },
+            { label: "failed", value: c("failed"), color: "text-red-400" },
+            { label: "pending", value: c("pending") + c("awaiting_approval"), color: "text-slate-200" },
+          ];
+        },
+
+        icon(s) {
+          return ({ done: "✓", running: "⟳", failed: "✗", pending: "○", awaiting_approval: "⏸", skipped: "—", cancelled: "⊘" })[s] || "·";
+        },
+        statusTextColor(s) {
+          return ({ done: "text-emerald-400", running: "text-blue-400", failed: "text-red-400", awaiting_approval: "text-amber-400", skipped: "text-slate-500" })[s] || "text-slate-400";
+        },
+        statusClass(s) {
+          return ({
+            done: "bg-emerald-900/50 text-emerald-300",
+            running: "bg-blue-900/50 text-blue-300 animate-pulse",
+            failed: "bg-red-900/60 text-red-200",
+            pending: "bg-slate-700/60 text-slate-300",
+            awaiting_approval: "bg-amber-900/60 text-amber-200",
+            skipped: "bg-slate-700/40 text-slate-400",
+            cancelled: "bg-slate-700/40 text-slate-400",
+          })[s] || "bg-slate-700";
+        },
+        historyClass(s) {
+          return ({ done: "text-emerald-400", failed: "text-red-400", running: "text-blue-400", cancelled: "text-amber-400" })[s] || "text-slate-400";
+        },
+
+        duration(t) {
+          if (!t.started_at) return "";
+          const start = new Date(t.started_at).getTime();
+          const end = t.ended_at ? new Date(t.ended_at).getTime() : Date.now();
+          const ms = end - start;
+          if (ms < 1000) return `${ms}ms`;
+          if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+          return `${(ms / 60_000).toFixed(1)}m`;
+        },
+
+        toggle(id) {
+          this.open[id] = !this.open[id];
+          if (this.open[id]) this.attachLogStream(id); else this.detachLogStream(id);
+        },
+        attachLogStream(id) {
+          if (this._logStreams[id]) return;
+          this.logs[id] = "(opening stream…)";
+          const url = `/api/logs/current/${encodeURIComponent(id)}/stream`;
+          const es = new EventSource(url);
+          es.addEventListener("log", (e) => { this.logs[id] = e.data; });
+          es.addEventListener("delta", (e) => { this.logs[id] = (this.logs[id] || "") + e.data; });
+          this._logStreams[id] = es;
+        },
+        detachLogStream(id) {
+          const es = this._logStreams[id];
+          if (es) { es.close(); delete this._logStreams[id]; }
+        },
+
+        mermaidSrc() {
+          const tasks = this.orderedTasks();
+          if (tasks.length === 0) return "";
+          const safe = (s) => s.replace(/[^a-zA-Z0-9_]/g, "_");
+          const dir = tasks.length > 6 ? "LR" : "LR";
+          let out = `flowchart ${dir}\n`;
+          for (const t of tasks) {
+            const verifyMark = t.kind === "verify" ? "⊕ " : "";
+            const approvalMark = t.requires_approval_after ? " ⏸" : "";
+            const label = `${verifyMark}${t.id}\\n${t.project}${approvalMark}`;
+            out += `  ${safe(t.id)}["${label}"]\n`;
+            out += `  class ${safe(t.id)} s_${t.status};\n`;
+            for (const dep of t.depends_on || []) {
+              out += `  ${safe(dep)} --> ${safe(t.id)}\n`;
+            }
+          }
+          out += `
+classDef s_done fill:#064e3b,stroke:#10b981,color:#fff;
+classDef s_running fill:#1e3a8a,stroke:#3b82f6,color:#fff,stroke-dasharray:5 3;
+classDef s_failed fill:#7f1d1d,stroke:#ef4444,color:#fff;
+classDef s_pending fill:#1e293b,stroke:#475569,color:#cbd5e1;
+classDef s_awaiting_approval fill:#78350f,stroke:#f59e0b,color:#fff;
+classDef s_skipped fill:#334155,stroke:#475569,color:#94a3b8;
+classDef s_cancelled fill:#334155,stroke:#475569,color:#94a3b8;
+`;
+          return out;
+        },
+
+        renderMd(text) {
+          try { return window.marked.parse(text || ""); } catch { return text; }
+        },
+
+        async sendChat() {
+          const text = this.draft.trim();
+          if (!text || this.sending) return;
+          this.chat.messages.push({ role: "user", content: text, timestamp: new Date().toISOString() });
+          this.draft = "";
+          this.sending = true;
+          this.$nextTick(() => this.scrollChat());
+          try {
+            const r = await fetch("/api/chat", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ text }),
+            });
+            if (!r.ok) {
+              const err = await r.text();
+              this.chat.messages.push({ role: "assistant", content: `**[error]** ${err}`, timestamp: new Date().toISOString() });
+            } else {
+              const { reply } = await r.json();
+              this.chat.messages.push(reply);
+              await this.fetchChat();
+            }
+          } catch (e) {
+            this.chat.messages.push({ role: "assistant", content: `**[error]** ${String(e)}`, timestamp: new Date().toISOString() });
+          } finally {
+            this.sending = false;
+            this.$nextTick(() => this.scrollChat());
+          }
+        },
+        scrollChat() {
+          const el = this.$refs.chatScroll;
+          if (el) el.scrollTop = el.scrollHeight;
+        },
+        async resetChat() {
+          if (!confirm("Drop current chat session?")) return;
+          await fetch("/api/chat", { method: "DELETE" });
+          this.chat = { messages: [], cursor_chat_id: null };
+        },
+      };
+    }
+  </script>
+</body>
+</html>

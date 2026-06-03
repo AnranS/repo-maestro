@@ -1,0 +1,5 @@
+.changeset/large-flowers-roll.md
+config/config/src/index.ts
+config/config/test/index.ts
+pnpm/test/config.ts
+pnpm/test/install/misc.ts

@@ -1,0 +1,249 @@
+From b51dbebb03e71cba442a675ac19ed383e1c5ba30 Mon Sep 17 00:00:00 2001
+From: Jake Bailey <5341706+jakebailey@users.noreply.github.com>
+Date: Sun, 22 Feb 2026 12:48:09 -0800
+Subject: [PATCH 1/3] fix(config): respect lockfile: false setting from
+ pnpm-workspace.yaml
+
+---
+ .changeset/large-flowers-roll.md |  5 +++++
+ config/config/src/index.ts       | 11 ++++++-----
+ config/config/test/index.ts      | 19 +++++++++++++++++++
+ 3 files changed, 30 insertions(+), 5 deletions(-)
+ create mode 100644 .changeset/large-flowers-roll.md
+
+diff --git a/.changeset/large-flowers-roll.md b/.changeset/large-flowers-roll.md
+new file mode 100644
+index 00000000000..abd9d68a3a0
+--- /dev/null
++++ b/.changeset/large-flowers-roll.md
+@@ -0,0 +1,5 @@
++---
++"@pnpm/config": patch
++---
++
++Fixed `lockfile: false` in `pnpm-workspace.yaml` being ignored, causing `pnpm-lock.yaml` to be created despite the setting.
+diff --git a/config/config/src/index.ts b/config/config/src/index.ts
+index 9f0722cfc3b..65d6f8a9648 100644
+--- a/config/config/src/index.ts
++++ b/config/config/src/index.ts
+@@ -326,11 +326,6 @@ export async function getConfig (opts: {
+   pnpmConfig.authInfos = networkConfigs.authInfos ?? {} // TODO: remove `?? {}` (when possible)
+   pnpmConfig.sslConfigs = networkConfigs.sslConfigs
+   Object.assign(pnpmConfig, getDefaultAuthInfo(pnpmConfig.rawConfig))
+-  pnpmConfig.useLockfile = (() => {
+-    if (typeof pnpmConfig.lockfile === 'boolean') return pnpmConfig.lockfile
+-    if (typeof pnpmConfig.packageLock === 'boolean') return pnpmConfig.packageLock
+-    return false
+-  })()
+   pnpmConfig.pnpmHomeDir = getDataDir(process)
+   let globalDirRoot
+   if (pnpmConfig.globalDir) {
+@@ -434,6 +429,12 @@ export async function getConfig (opts: {
+     }
+   }
+
++  pnpmConfig.useLockfile = (() => {
++    if (typeof pnpmConfig.lockfile === 'boolean') return pnpmConfig.lockfile
++    if (typeof pnpmConfig.packageLock === 'boolean') return pnpmConfig.packageLock
++    return false
++  })()
++
+   pnpmConfig.useGitBranchLockfile = (() => {
+     if (typeof pnpmConfig.gitBranchLockfile === 'boolean') return pnpmConfig.gitBranchLockfile
+     return false
+diff --git a/config/config/test/index.ts b/config/config/test/index.ts
+index 01aef24e251..8c5717b41c5 100644
+--- a/config/config/test/index.ts
++++ b/config/config/test/index.ts
+@@ -1462,3 +1462,22 @@ describe('global config.yaml', () => {
+     expect(config.rawConfig).toHaveProperty(['dangerously-allow-all-builds'])
+   })
+ })
++
++test('lockfile: false in pnpm-workspace.yaml sets useLockfile to false', async () => {
++  prepareEmpty()
++
++  writeYamlFile('pnpm-workspace.yaml', {
++    lockfile: false,
++  })
++
++  const { config } = await getConfig({
++    cliOptions: {},
++    packageManager: {
++      name: 'pnpm',
++      version: '1.0.0',
++    },
++    workspaceDir: process.cwd(),
++  })
++
++  expect(config.useLockfile).toBe(false)
++})
+
+From 922d6e0e3e202689bb6b1c5af94a02b92ea6e74e Mon Sep 17 00:00:00 2001
+From: Jake Bailey <5341706+jakebailey@users.noreply.github.com>
+Date: Sun, 22 Feb 2026 13:01:29 -0800
+Subject: [PATCH 2/3] fix(config): derive lockfile settings after all config
+ sources are applied
+
+---
+ config/config/src/index.ts  | 44 ++++++++++++++++++-------------------
+ config/config/test/index.ts | 44 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 66 insertions(+), 22 deletions(-)
+
+diff --git a/config/config/src/index.ts b/config/config/src/index.ts
+index 65d6f8a9648..af501915ee6 100644
+--- a/config/config/src/index.ts
++++ b/config/config/src/index.ts
+@@ -429,28 +429,6 @@ export async function getConfig (opts: {
+     }
+   }
+
+-  pnpmConfig.useLockfile = (() => {
+-    if (typeof pnpmConfig.lockfile === 'boolean') return pnpmConfig.lockfile
+-    if (typeof pnpmConfig.packageLock === 'boolean') return pnpmConfig.packageLock
+-    return false
+-  })()
+-
+-  pnpmConfig.useGitBranchLockfile = (() => {
+-    if (typeof pnpmConfig.gitBranchLockfile === 'boolean') return pnpmConfig.gitBranchLockfile
+-    return false
+-  })()
+-  pnpmConfig.mergeGitBranchLockfiles = await (async () => {
+-    if (typeof pnpmConfig.mergeGitBranchLockfiles === 'boolean') return pnpmConfig.mergeGitBranchLockfiles
+-    if (pnpmConfig.mergeGitBranchLockfilesBranchPattern != null && pnpmConfig.mergeGitBranchLockfilesBranchPattern.length > 0) {
+-      const branch = await getCurrentBranch()
+-      if (branch) {
+-        const branchMatcher = createMatcher(pnpmConfig.mergeGitBranchLockfilesBranchPattern)
+-        return branchMatcher(branch)
+-      }
+-    }
+-    return undefined
+-  })()
+-
+   // omit some schema that the custom parser can't yet handle
+   const envPnpmTypes = omit([
+     'init-version', // the type is a private function named 'semver'
+@@ -479,6 +457,28 @@ export async function getConfig (opts: {
+
+   overrideSupportedArchitecturesWithCLI(pnpmConfig, cliOptions)
+
++  pnpmConfig.useLockfile = (() => {
++    if (typeof pnpmConfig.lockfile === 'boolean') return pnpmConfig.lockfile
++    if (typeof pnpmConfig.packageLock === 'boolean') return pnpmConfig.packageLock
++    return false
++  })()
++
++  pnpmConfig.useGitBranchLockfile = (() => {
++    if (typeof pnpmConfig.gitBranchLockfile === 'boolean') return pnpmConfig.gitBranchLockfile
++    return false
++  })()
++  pnpmConfig.mergeGitBranchLockfiles = await (async () => {
++    if (typeof pnpmConfig.mergeGitBranchLockfiles === 'boolean') return pnpmConfig.mergeGitBranchLockfiles
++    if (pnpmConfig.mergeGitBranchLockfilesBranchPattern != null && pnpmConfig.mergeGitBranchLockfilesBranchPattern.length > 0) {
++      const branch = await getCurrentBranch()
++      if (branch) {
++        const branchMatcher = createMatcher(pnpmConfig.mergeGitBranchLockfilesBranchPattern)
++        return branchMatcher(branch)
++      }
++    }
++    return undefined
++  })()
++
+   if (!hasDependencyBuildOptions(pnpmConfig)) {
+     Object.assign(pnpmConfig, globalDepsBuildConfig)
+   }
+diff --git a/config/config/test/index.ts b/config/config/test/index.ts
+index 8c5717b41c5..b7aff4da4f5 100644
+--- a/config/config/test/index.ts
++++ b/config/config/test/index.ts
+@@ -1481,3 +1481,47 @@ test('lockfile: false in pnpm-workspace.yaml sets useLockfile to false', async (
+
+   expect(config.useLockfile).toBe(false)
+ })
++
++test('pnpm_config_lockfile env var overrides lockfile from pnpm-workspace.yaml in useLockfile', async () => {
++  prepareEmpty()
++
++  writeYamlFile('pnpm-workspace.yaml', {
++    lockfile: true,
++  })
++
++  const { config } = await getConfig({
++    cliOptions: {},
++    env: {
++      pnpm_config_lockfile: 'false',
++    },
++    packageManager: {
++      name: 'pnpm',
++      version: '1.0.0',
++    },
++    workspaceDir: process.cwd(),
++  })
++
++  expect(config.useLockfile).toBe(false)
++})
++
++test('pnpm_config_git_branch_lockfile env var overrides git-branch-lockfile from pnpm-workspace.yaml in useGitBranchLockfile', async () => {
++  prepareEmpty()
++
++  writeYamlFile('pnpm-workspace.yaml', {
++    gitBranchLockfile: false,
++  })
++
++  const { config } = await getConfig({
++    cliOptions: {},
++    env: {
++      pnpm_config_git_branch_lockfile: 'true',
++    },
++    packageManager: {
++      name: 'pnpm',
++      version: '1.0.0',
++    },
++    workspaceDir: process.cwd(),
++  })
++
++  expect(config.useGitBranchLockfile).toBe(true)
++})
+
+From ed0a4be879445cad051244c0c7f45b0ac316caf7 Mon Sep 17 00:00:00 2001
+From: Jake Bailey <5341706+jakebailey@users.noreply.github.com>
+Date: Sun, 22 Feb 2026 17:02:32 -0800
+Subject: [PATCH 3/3] fix(config): use lockfile instead of useLockfile in
+ integration tests
+
+---
+ pnpm/test/config.ts       | 2 +-
+ pnpm/test/install/misc.ts | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/pnpm/test/config.ts b/pnpm/test/config.ts
+index e02bb11ed0f..fa456e525f5 100644
+--- a/pnpm/test/config.ts
++++ b/pnpm/test/config.ts
+@@ -5,7 +5,7 @@ import { execPnpmSync } from './utils/index.js'
+
+ test('read settings from pnpm-workspace.yaml', async () => {
+   prepare()
+-  fs.writeFileSync('pnpm-workspace.yaml', 'useLockfile: false', 'utf8')
++  fs.writeFileSync('pnpm-workspace.yaml', 'lockfile: false', 'utf8')
+   expect(execPnpmSync(['install']).status).toBe(0)
+   expect(fs.existsSync(WANTED_LOCKFILE)).toBeFalsy()
+ })
+diff --git a/pnpm/test/install/misc.ts b/pnpm/test/install/misc.ts
+index 75b3822d75e..05fe4b57d00 100644
+--- a/pnpm/test/install/misc.ts
++++ b/pnpm/test/install/misc.ts
+@@ -72,11 +72,11 @@ test('write to stderr when --use-stderr is used', async () => {
+   expect(result.stderr.toString()).not.toBe('')
+ })
+
+-test('install with useLockfile being false in pnpm-workspace.yaml', async () => {
++test('install with lockfile being false in pnpm-workspace.yaml', async () => {
+   const project = prepare()
+
+   writeYamlFile('pnpm-workspace.yaml', {
+-    useLockfile: false,
++    lockfile: false,
+   })
+
+   await execPnpm(['add', 'is-positive'])

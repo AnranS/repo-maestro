@@ -1,0 +1,66 @@
+name: Feature request
+description: Propose a new capability or a meaningful change to existing behavior.
+title: "[feat] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Maestro is intentionally narrow. The bar for new features is "would
+        the project be meaningfully worse without this?". Please be concrete
+        about the trigger that made you want it.
+
+  - type: textarea
+    id: trigger
+    attributes:
+      label: Trigger
+      description: What situation made you wish for this? A real example beats an abstract description.
+      placeholder: "I was trying to ... and I had to ... because maestro does not ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape
+      description: How would you like this to work? A command sketch, a YAML shape, or a UI mock is great.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you tried, related tools that solve a piece of it, or "this is the only option I can think of".
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope this touches
+      multiple: true
+      options:
+        - "maestro work / plan synthesis"
+        - "scheduler / DAG runner"
+        - "channel adapter (Feishu / chat)"
+        - "task adapters (codex / cursor / shell)"
+        - "web dashboard"
+        - "CLI ergonomics / docs"
+        - "other"
+    validations:
+      required: true
+
+  - type: textarea
+    id: ship-without
+    attributes:
+      label: What would you ship without this?
+      description: If this never lands, what's the next-best thing you could do today? (Helps gauge how blocking it really is.)
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I read [Why maestro](../../README.md#why-maestro) and this fits maestro's scope (not a generic workflow-engine request).
+          required: true

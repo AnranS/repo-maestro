@@ -1,0 +1,15 @@
+{
+  "name": "@demo/cli",
+  "version": "0.1.0",
+  "private": true,
+  "bin": {
+    "demo": "src/index.js"
+  },
+  "scripts": {
+    "test": "echo cli ok",
+    "build": "echo build cli"
+  },
+  "dependencies": {
+    "@demo/core": "workspace:*"
+  }
+}

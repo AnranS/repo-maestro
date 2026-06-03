@@ -1,0 +1,54 @@
+version: 1
+
+defaults:
+  agent: cursor
+  branch_prefix: feat/
+  max_parallel: 4
+
+projects:
+  server:
+    path: ~/work/server
+    type: backend
+    stack: [go, postgres]
+    commands:
+      build: make build
+      test: make test
+      lint: golangci-lint run
+      mock: make mock-up
+    contracts:
+      provides: schemas/openapi.yaml
+    memory_scope: [api, schema, infra]
+
+  web:
+    path: ~/work/web
+    type: frontend
+    stack: [react, ts]
+    commands:
+      build: pnpm build
+      test: pnpm test
+      lint: pnpm lint
+    contracts:
+      consumes: schemas/openapi.yaml
+    memory_scope: [api, ux]
+
+  android:
+    path: ~/work/android
+    type: mobile
+    stack: [kotlin]
+    commands:
+      build: ./gradlew assembleDebug
+      test: ./gradlew test
+    contracts:
+      consumes: schemas/openapi.yaml
+    memory_scope: [api, ux, mobile]
+
+  ios:
+    path: ~/work/ios
+    type: mobile
+    stack: [swift]
+    commands:
+      build: xcodebuild -scheme App build
+      test: xcodebuild test -scheme App
+    contracts:
+      consumes: schemas/openapi.yaml
+    memory_scope: [api, ux, mobile]

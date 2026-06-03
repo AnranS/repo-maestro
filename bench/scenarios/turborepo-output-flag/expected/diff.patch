@@ -1,0 +1,165 @@
+From aaf06c11f555e94174d8a113ea30c28a3848e642 Mon Sep 17 00:00:00 2001
+From: Anthony Shew <anthonyshew@gmail.com>
+Date: Mon, 23 Feb 2026 15:47:33 -0700
+Subject: [PATCH] fix: Resolve git_root to worktree root in linked worktrees
+
+In detect_git2, git_root was set to main_worktree_root, causing
+"Path X is not parent of Y" errors when the linked worktree lives
+at a sibling path (e.g. ~/project/front-worktree/branch vs
+~/project/front). The SCM layer uses git_root to anchor paths via
+strip_prefix, which fails when the worktree is not a child of the
+main repo.
+
+The subprocess code path was already correct (resolving from
+--show-cdup). This aligns the git2 path to match.
+---
+ crates/turborepo-scm/src/package_deps.rs | 75 ++++++++++++++++++++++++
+ crates/turborepo-scm/src/worktree.rs     | 35 ++++++++++-
+ 2 files changed, 109 insertions(+), 1 deletion(-)
+
+diff --git a/crates/turborepo-scm/src/package_deps.rs b/crates/turborepo-scm/src/package_deps.rs
+index 20d002a0c38d0..17da82ed31620 100644
+--- a/crates/turborepo-scm/src/package_deps.rs
++++ b/crates/turborepo-scm/src/package_deps.rs
+@@ -721,6 +721,81 @@ mod tests {
+         Ok(())
+     }
+
++    /// Regression test for worktrees that live outside the main repo directory.
++    ///
++    /// Reproduces the real-world layout where:
++    ///   ~/project/front           <- main repo
++    ///   ~/project/front-worktree/ <- linked worktrees (sibling, NOT a child)
++    ///
++    /// Before the fix, `git_root` was set to the main worktree root, causing
++    /// `self.root.anchor(turbo_root)` to fail with "Path X is not parent of Y"
++    /// because the worktree path cannot be strip-prefixed by a sibling path.
++    #[test]
++    fn test_package_hashes_in_external_worktree() -> Result<(), Error> {
++        use crate::worktree::WorktreeInfo;
++
++        // Two separate temp dirs to simulate sibling directories
++        let (_tmp_main, main_root) = tmp_dir();
++        let (_tmp_wt, worktree_parent) = tmp_dir();
++
++        // Set up the main repo with a package
++        let pkg_dir = main_root.join_component("my-pkg");
++        pkg_dir.create_dir_all()?;
++        main_root
++            .join_component("package.json")
++            .create_with_contents("{}")?;
++        pkg_dir
++            .join_component("package.json")
++            .create_with_contents("{}")?;
++        pkg_dir
++            .join_component("index.js")
++            .create_with_contents("console.log('hello')")?;
++
++        setup_repository(&main_root);
++        commit_all(&main_root);
++
++        // Create a linked worktree at a sibling path (not inside main_root)
++        let worktree_path = worktree_parent.join_component("my-branch");
++        require_git_cmd(
++            &main_root,
++            &[
++                "worktree",
++                "add",
++                worktree_path.as_str(),
++                "-b",
++                "test-external-worktree",
++            ],
++        );
++
++        // Detect worktree info from within the linked worktree
++        let info = WorktreeInfo::detect(&worktree_path).unwrap();
++        assert!(info.is_linked_worktree());
++        assert_eq!(info.git_root, worktree_path);
++
++        // Construct SCM the same way the run builder does: using the pre-resolved
++        // git_root from worktree detection
++        let scm = crate::SCM::new_with_git_root(&worktree_path, info.git_root);
++        let crate::SCM::Git(git) = scm else {
++            panic!("expected git SCM");
++        };
++
++        // This is the call that previously failed with "is not parent of"
++        let package_path = AnchoredSystemPathBuf::from_raw("my-pkg")?;
++        let hashes =
++            git.get_package_file_hashes::<&str>(&worktree_path, &package_path, &[], false, None)?;
++
++        assert!(
++            hashes.contains_key(&RelativeUnixPathBuf::new("index.js").unwrap()),
++            "should hash files in the worktree package"
++        );
++        assert!(
++            hashes.contains_key(&RelativeUnixPathBuf::new("package.json").unwrap()),
++            "should hash package.json in the worktree package"
++        );
++
++        Ok(())
++    }
++
+     fn to_hash_map(pairs: &[(&str, &str)]) -> GitHashes {
+         HashMap::from_iter(
+             pairs
+diff --git a/crates/turborepo-scm/src/worktree.rs b/crates/turborepo-scm/src/worktree.rs
+index 4582732e4dbc2..cb8e674db9f17 100644
+--- a/crates/turborepo-scm/src/worktree.rs
++++ b/crates/turborepo-scm/src/worktree.rs
+@@ -57,7 +57,7 @@ impl WorktreeInfo {
+         let git_common_dir = repo.commondir().to_string_lossy().to_string();
+
+         let main_worktree_root = resolve_main_worktree_root(path, &git_common_dir)?;
+-        let git_root = main_worktree_root.clone();
++        let git_root = worktree_root.clone();
+
+         Ok(Self {
+             worktree_root,
+@@ -227,6 +227,7 @@ mod tests {
+
+         assert_eq!(info.worktree_root, worktree_path);
+         assert_eq!(info.main_worktree_root, repo_root);
++        assert_eq!(info.git_root, worktree_path);
+         assert!(info.is_linked_worktree());
+     }
+
+@@ -257,6 +258,38 @@ mod tests {
+         assert!(!info.is_linked_worktree());
+     }
+
++    #[test]
++    fn test_linked_worktree_outside_main_repo() {
++        // Reproduces the real-world scenario where the worktree lives at a sibling
++        // path (e.g. ~/Vercel/front-worktree/branch) rather than inside the main
++        // repo (~/Vercel/front). git_root must resolve to the worktree root so
++        // that path anchoring works correctly in the SCM layer.
++        let (_tmp_main, repo_root) = tmp_dir();
++        let (_tmp_wt, worktree_parent) = tmp_dir();
++        setup_repository(&repo_root);
++
++        let worktree_path = worktree_parent.join_component("my-branch");
++        require_git_cmd(
++            &repo_root,
++            &[
++                "worktree",
++                "add",
++                worktree_path.as_str(),
++                "-b",
++                "test-branch-outside",
++            ],
++        );
++
++        let info = WorktreeInfo::detect(&worktree_path).unwrap();
++
++        assert_eq!(info.worktree_root, worktree_path);
++        assert_eq!(info.main_worktree_root, repo_root);
++        // git_root must be the worktree root, NOT the main worktree root,
++        // otherwise path anchoring fails with "is not parent of"
++        assert_eq!(info.git_root, worktree_path);
++        assert!(info.is_linked_worktree());
++    }
++
+     #[test]
+     fn test_linked_worktree_subdirectory_detection() {
+         let (_tmp, repo_root) = tmp_dir();

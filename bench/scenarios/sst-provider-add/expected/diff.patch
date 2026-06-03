@@ -1,0 +1,178 @@
+From 9b3247b718d74e8fda52c4585b8ab61da733d126 Mon Sep 17 00:00:00 2001
+From: LukeParkerDev <10430890+Hona@users.noreply.github.com>
+Date: Mon, 23 Feb 2026 11:18:10 +1000
+Subject: [PATCH 1/4] fix(win32): normalize paths at permission boundaries
+
+This PR resolves remaining Windows path-matching bugs without requiring a massive architectural rewrite of the backend's native Node.js path handling.
+
+Changes:
+- Wildcard.match: Normalizes strings to POSIX / immediately prior to Regex evaluation. This ensures opencode.json permission rules match correctly regardless of whether the AI or OS provides a backslash \ or forward slash /.
+- external-directory.ts: Ensures the generated glob patterns sent to the UI for user approval use forward slashes for cross-platform consistency in saved rules.
+- bash.test.ts: Modifies the rm tmpfile test to target a nested directory, preventing false-positive test failures when run in MSYS/Cygwin environments that map Windows temp directories to virtual /tmp mounts.
+- Updated associated tests to reflect the normalized output formats.
+---
+ packages/opencode/src/tool/external-directory.ts | 2 +-
+ packages/opencode/src/util/wildcard.ts           | 2 ++
+ packages/opencode/test/tool/bash.test.ts         | 4 ++--
+ packages/opencode/test/tool/read.test.ts         | 4 ++--
+ 4 files changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/packages/opencode/src/tool/external-directory.ts b/packages/opencode/src/tool/external-directory.ts
+index 1d3958fc464f..5d8885b2ad46 100644
+--- a/packages/opencode/src/tool/external-directory.ts
++++ b/packages/opencode/src/tool/external-directory.ts
+@@ -18,7 +18,7 @@ export async function assertExternalDirectory(ctx: Tool.Context, target?: string
+
+   const kind = options?.kind ?? "file"
+   const parentDir = kind === "directory" ? target : path.dirname(target)
+-  const glob = path.join(parentDir, "*")
++  const glob = path.join(parentDir, "*").replaceAll("\\", "/")
+
+   await ctx.ask({
+     permission: "external_directory",
+diff --git a/packages/opencode/src/util/wildcard.ts b/packages/opencode/src/util/wildcard.ts
+index 4a6eba96ff93..335641135930 100644
+--- a/packages/opencode/src/util/wildcard.ts
++++ b/packages/opencode/src/util/wildcard.ts
+@@ -2,6 +2,8 @@ import { sortBy, pipe } from "remeda"
+
+ export namespace Wildcard {
+   export function match(str: string, pattern: string) {
++    if (str) str = str.replaceAll("\\", "/")
++    if (pattern) pattern = pattern.replaceAll("\\", "/")
+     let escaped = pattern
+       .replace(/[.+^${}()|[\]\\]/g, "\\$&") // escape special regex chars
+       .replace(/\*/g, ".*") // * becomes .*
+diff --git a/packages/opencode/test/tool/bash.test.ts b/packages/opencode/test/tool/bash.test.ts
+index 3bd923b6041b..db05f8f623f6 100644
+--- a/packages/opencode/test/tool/bash.test.ts
++++ b/packages/opencode/test/tool/bash.test.ts
+@@ -203,8 +203,8 @@ describe("tool.bash permissions", () => {
+
+         await bash.execute(
+           {
+-            command: "rm tmpfile",
+-            description: "Remove tmpfile",
++            command: `rm -rf ${path.join(tmp.path, "nested")}`,
++            description: "remove nested dir",
+           },
+           testCtx,
+         )
+diff --git a/packages/opencode/test/tool/read.test.ts b/packages/opencode/test/tool/read.test.ts
+index 88228f14e877..b22fc3e71205 100644
+--- a/packages/opencode/test/tool/read.test.ts
++++ b/packages/opencode/test/tool/read.test.ts
+@@ -74,7 +74,7 @@ describe("tool.read external_directory permission", () => {
+         await read.execute({ filePath: path.join(outerTmp.path, "secret.txt") }, testCtx)
+         const extDirReq = requests.find((r) => r.permission === "external_directory")
+         expect(extDirReq).toBeDefined()
+-        expect(extDirReq!.patterns.some((p) => p.includes(outerTmp.path))).toBe(true)
++        expect(extDirReq!.patterns.some((p) => p.includes(outerTmp.path.replaceAll("\\", "/")))).toBe(true)
+       },
+     })
+   })
+@@ -100,7 +100,7 @@ describe("tool.read external_directory permission", () => {
+         await read.execute({ filePath: path.join(outerTmp.path, "external") }, testCtx)
+         const extDirReq = requests.find((r) => r.permission === "external_directory")
+         expect(extDirReq).toBeDefined()
+-        expect(extDirReq!.patterns).toContain(path.join(outerTmp.path, "external", "*"))
++        expect(extDirReq!.patterns).toContain(path.join(outerTmp.path, "external", "*").replaceAll("\\", "/"))
+       },
+     })
+   })
+
+From 5a9d823d1de9338378691fdb3fe9ccbb96b8f236 Mon Sep 17 00:00:00 2001
+From: LukeParkerDev <10430890+Hona@users.noreply.github.com>
+Date: Mon, 23 Feb 2026 11:33:45 +1000
+Subject: [PATCH 2/4] fix(win32): make wildcard matching case-insensitive for
+ windows paths
+
+---
+ packages/opencode/src/util/wildcard.ts | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/packages/opencode/src/util/wildcard.ts b/packages/opencode/src/util/wildcard.ts
+index 335641135930..3e61ab179011 100644
+--- a/packages/opencode/src/util/wildcard.ts
++++ b/packages/opencode/src/util/wildcard.ts
+@@ -2,8 +2,8 @@ import { sortBy, pipe } from "remeda"
+
+ export namespace Wildcard {
+   export function match(str: string, pattern: string) {
+-    if (str) str = str.replaceAll("\\", "/")
+-    if (pattern) pattern = pattern.replaceAll("\\", "/")
++    if (str) str = str.replaceAll("\\", "/").toLowerCase()
++    if (pattern) pattern = pattern.replaceAll("\\", "/").toLowerCase()
+     let escaped = pattern
+       .replace(/[.+^${}()|[\]\\]/g, "\\$&") // escape special regex chars
+       .replace(/\*/g, ".*") // * becomes .*
+
+From ac7cfbd687aa03d3f3aa888742ecc901b6b9d08e Mon Sep 17 00:00:00 2001
+From: LukeParkerDev <10430890+Hona@users.noreply.github.com>
+Date: Mon, 23 Feb 2026 11:36:31 +1000
+Subject: [PATCH 3/4] fix(win32): scope wildcard case-insensitivity to windows
+ only
+
+---
+ packages/opencode/src/util/wildcard.ts | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/packages/opencode/src/util/wildcard.ts b/packages/opencode/src/util/wildcard.ts
+index 3e61ab179011..f54b6c85fd7f 100644
+--- a/packages/opencode/src/util/wildcard.ts
++++ b/packages/opencode/src/util/wildcard.ts
+@@ -2,8 +2,8 @@ import { sortBy, pipe } from "remeda"
+
+ export namespace Wildcard {
+   export function match(str: string, pattern: string) {
+-    if (str) str = str.replaceAll("\\", "/").toLowerCase()
+-    if (pattern) pattern = pattern.replaceAll("\\", "/").toLowerCase()
++    if (str) str = str.replaceAll("\\", "/")
++    if (pattern) pattern = pattern.replaceAll("\\", "/")
+     let escaped = pattern
+       .replace(/[.+^${}()|[\]\\]/g, "\\$&") // escape special regex chars
+       .replace(/\*/g, ".*") // * becomes .*
+@@ -15,7 +15,8 @@ export namespace Wildcard {
+       escaped = escaped.slice(0, -3) + "( .*)?"
+     }
+
+-    return new RegExp("^" + escaped + "$", "s").test(str)
++    const flags = process.platform === "win32" ? "si" : "s"
++    return new RegExp("^" + escaped + "$", flags).test(str)
+   }
+
+   export function all(input: string, patterns: Record<string, any>) {
+
+From 97f83a23d3204259b59f329ec2f8091b1d702581 Mon Sep 17 00:00:00 2001
+From: LukeParkerDev <10430890+Hona@users.noreply.github.com>
+Date: Mon, 23 Feb 2026 11:40:01 +1000
+Subject: [PATCH 4/4] test(win32): add coverage for wildcard path normalization
+ and case-insensitivity
+
+---
+ packages/opencode/test/util/wildcard.test.ts | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/packages/opencode/test/util/wildcard.test.ts b/packages/opencode/test/util/wildcard.test.ts
+index 9cd0e9b94507..56e753d12a34 100644
+--- a/packages/opencode/test/util/wildcard.test.ts
++++ b/packages/opencode/test/util/wildcard.test.ts
+@@ -73,3 +73,18 @@ test("allStructured handles sed flags", () => {
+   expect(Wildcard.allStructured({ head: "sed", tail: ["-n", "1p", "file"] }, rules)).toBe("allow")
+   expect(Wildcard.allStructured({ head: "sed", tail: ["-i", "-n", "/./p", "myfile.txt"] }, rules)).toBe("ask")
+ })
++
++test("match normalizes slashes for cross-platform globbing", () => {
++  expect(Wildcard.match("C:\\Windows\\System32\\*", "C:/Windows/System32/*")).toBe(true)
++  expect(Wildcard.match("C:/Windows/System32/drivers", "C:\\Windows\\System32\\*")).toBe(true)
++})
++
++test("match handles case-insensitivity on Windows", () => {
++  if (process.platform === "win32") {
++    expect(Wildcard.match("C:\\windows\\system32\\hosts", "C:/Windows/System32/*")).toBe(true)
++    expect(Wildcard.match("c:/windows/system32/hosts", "C:\\Windows\\System32\\*")).toBe(true)
++  } else {
++    // Unix paths are case-sensitive
++    expect(Wildcard.match("/etc/example/file", "/Etc/example/*")).toBe(false)
++  }
++})

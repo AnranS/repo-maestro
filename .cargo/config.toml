@@ -1,0 +1,6 @@
+# Pin the target directory so a leaked CARGO_TARGET_DIR from a sandboxed shell
+# can't redirect our builds into a different cache. Without this, `cargo build`
+# from this repo would silently put the binary somewhere weird and the file at
+# `./target/debug/maestro` would be stale.
+[build]
+target-dir = "target"

@@ -1,0 +1,20 @@
+openapi: 3.0.0
+info:
+  title: Required field fixture
+  version: 1.0.0
+paths:
+  /v1/users:
+    get:
+      responses:
+        "200":
+          description: users
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, email]
+                properties:
+                  id:
+                    type: string
+                  email:
+                    type: string

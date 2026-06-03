@@ -1,0 +1,54 @@
+name: bench
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch: {}
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: build web assets
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: build maestro
+        run: cargo build --release
+
+      - name: run bench
+        run: |
+          ./target/release/maestro bench all --json > bench-result.json || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-result
+          path: bench-result.json
+
+      - name: post bench summary
+        run: ./scripts/post-bench-summary.sh bench-result.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

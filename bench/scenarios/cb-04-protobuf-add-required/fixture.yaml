@@ -1,0 +1,14 @@
+id: cb-04-protobuf-add-required
+kind: contract-break
+goal: "Detect a protobuf lint rule that treats a newly added field as required"
+expected:
+  touched_files:
+    - producer/schema.proto
+    - consumer/buf_lint.sh
+  required_projects: [producer, consumer]
+  required_contract_consumers: [consumer]
+  forbidden_files: []
+budget:
+  max_runtime_secs: 60
+  max_tasks: 4
+tools_required: [sh]

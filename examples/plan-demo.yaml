@@ -1,0 +1,42 @@
+spec: "demo plan — 全部用 mock adapter 跑 DAG 拓扑"
+created_by: hand
+tasks:
+  - id: T1_server_schema
+    project: server
+    agent: mock
+    prompt: "在 /api/profile 增加 nickname 字段，更新 swagger + 单测"
+    depends_on: []
+    parallel_group: A
+    timeout_minutes: 5
+
+  - id: T2_mock_update
+    project: server
+    agent: mock
+    prompt: "重新生成 mock 服务，发布到 mock.local:3000"
+    depends_on: [T1_server_schema]
+    parallel_group: A
+    timeout_minutes: 5
+
+  - id: T3_web_ui
+    project: web
+    agent: mock
+    prompt: "在 ProfilePage 加 nickname 展示"
+    depends_on: [T2_mock_update]
+    parallel_group: B
+    timeout_minutes: 5
+
+  - id: T4_android_ui
+    project: android
+    agent: mock
+    prompt: "在 ProfileFragment 加 nickname 展示"
+    depends_on: [T2_mock_update]
+    parallel_group: B
+    timeout_minutes: 5
+
+  - id: T5_ios_ui
+    project: ios
+    agent: mock
+    prompt: "在 ProfileView 加 nickname 展示"
+    depends_on: [T2_mock_update]
+    parallel_group: B
+    timeout_minutes: 5

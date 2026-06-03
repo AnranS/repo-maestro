@@ -1,0 +1,229 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: rgb(59 130 246 / 0.35);
+  }
+}
+
+@layer components {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: rgb(38 38 38);
+    border-radius: 4px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: rgb(64 64 64);
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+/* ─── Markdown prose ─── */
+.prose-chat {
+  font-size: 0.925rem;
+  line-height: 1.65;
+  color: rgb(229 229 229);
+}
+.prose-chat > * + * {
+  margin-top: 0.85em;
+}
+.prose-chat h1,
+.prose-chat h2,
+.prose-chat h3 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-top: 1.3em;
+  margin-bottom: 0.5em;
+  color: rgb(245 245 245);
+}
+.prose-chat h1 { font-size: 1.25rem; }
+.prose-chat h2 { font-size: 1.1rem; }
+.prose-chat h3 { font-size: 1rem; }
+.prose-chat p { margin: 0.5em 0; }
+.prose-chat ul,
+.prose-chat ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+.prose-chat ul { list-style: disc; }
+.prose-chat ol { list-style: decimal; }
+.prose-chat li { margin: 0.2em 0; }
+.prose-chat li > p { margin: 0.2em 0; }
+.prose-chat strong { color: rgb(250 250 250); font-weight: 600; }
+.prose-chat em { color: rgb(229 229 229); }
+.prose-chat a {
+  color: rgb(96 165 250);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.prose-chat hr {
+  border-color: rgb(38 38 38);
+  margin: 1.5em 0;
+}
+.prose-chat blockquote {
+  border-left: 3px solid rgb(63 63 70);
+  padding-left: 0.85em;
+  color: rgb(163 163 163);
+  margin: 0.6em 0;
+}
+.prose-chat code:not(pre code) {
+  background: rgb(38 38 38);
+  color: rgb(245 245 245);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+.prose-chat pre {
+  background: rgb(10 10 10);
+  border: 1px solid rgb(38 38 38);
+  border-radius: 8px;
+  padding: 0.85em 1em;
+  overflow-x: auto;
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+.prose-chat pre code { background: transparent; padding: 0; color: rgb(229 229 229); }
+.prose-chat table {
+  border-collapse: collapse;
+  font-size: 0.85em;
+  margin: 0.8em 0;
+}
+.prose-chat th,
+.prose-chat td {
+  border: 1px solid rgb(38 38 38);
+  padding: 0.4em 0.7em;
+  text-align: left;
+}
+.prose-chat th {
+  background: rgb(20 20 20);
+  font-weight: 600;
+}
+
+/* highlight.js theme — minimal dark */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in,
+.hljs-section,
+.hljs-tag { color: #f472b6; }
+.hljs-string,
+.hljs-attr,
+.hljs-symbol,
+.hljs-bullet { color: #a3e635; }
+.hljs-number,
+.hljs-meta,
+.hljs-literal { color: #fbbf24; }
+.hljs-comment,
+.hljs-quote { color: #6b7280; font-style: italic; }
+.hljs-title,
+.hljs-name,
+.hljs-class { color: #60a5fa; }
+.hljs-variable,
+.hljs-template-variable { color: #fb923c; }
+.hljs-type,
+.hljs-emphasis { color: #67e8f9; font-style: italic; }
+
+/* DAG container — mermaid sizing */
+.dag-mermaid svg {
+  max-width: 100%;
+  height: auto !important;
+  display: block;
+  margin: 0 auto;
+}
+
+.caret-blink::after {
+  content: "▍";
+  display: inline-block;
+  margin-left: 1px;
+  animation: caretBlink 1s steps(1) infinite;
+  color: rgb(96 165 250);
+}
+@keyframes caretBlink {
+  50% { opacity: 0; }
+}
+
+/* utilities */
+[x-cloak] { display: none !important; }
+
+/* ─── ReactFlow flow tuning ───
+ *
+ * The default xyflow animated-edge speed is fine for tasks (where flow == work
+ * is moving). For the static architecture graph we slow the dash crawl so it
+ * conveys direction without distracting; for running tasks we speed it up
+ * slightly so the "this is the active path" reading is unmistakable. */
+.arch-flow .react-flow__edge.animated .react-flow__edge-path {
+  stroke-dasharray: 6 6;
+  animation: maestroDashFlow 1.6s linear infinite;
+}
+.dag-flow .react-flow__edge.animated .react-flow__edge-path {
+  stroke-dasharray: 5 5;
+  animation: maestroDashFlow 0.9s linear infinite;
+}
+.dag-flow .react-flow__controls,
+.arch-flow .react-flow__controls {
+  background: #161616 !important;
+  border: 1px solid #262626 !important;
+  border-radius: 6px !important;
+  overflow: hidden;
+  box-shadow: none;
+}
+.dag-flow .react-flow__controls-button,
+.arch-flow .react-flow__controls-button {
+  background: #161616 !important;
+  border-bottom: 1px solid #262626 !important;
+  color: #a3a3a3 !important;
+}
+.dag-flow .react-flow__controls-button:hover,
+.arch-flow .react-flow__controls-button:hover {
+  background: #1c1c1c !important;
+  color: #ededed !important;
+}
+.dag-flow .react-flow__controls-button svg,
+.arch-flow .react-flow__controls-button svg {
+  fill: currentColor !important;
+  color: currentColor !important;
+}
+@keyframes maestroDashFlow {
+  to { stroke-dashoffset: -22; }
+}
+
+/* Pulse the actively-running task node's ring so motion in the DAG is
+ * legible even when there are no animated edges nearby. */
+.task-pulse {
+  animation: maestroTaskPulse 1.8s ease-in-out infinite;
+}
+/* Running timeline bars get a left-to-right shine so they read as "in motion"
+ * even though their width only changes once a second. */
+.timeline-bar-running {
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.28) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  background-size: 200% 100%;
+  animation: timelineShine 1.4s linear infinite;
+}
+@keyframes timelineShine {
+  to { background-position: -200% 0; }
+}
+@keyframes maestroTaskPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.45), 0 0 18px rgba(59, 130, 246, 0.30); }
+  50%      { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0.0), 0 0 40px rgba(59, 130, 246, 0.55); }
+}

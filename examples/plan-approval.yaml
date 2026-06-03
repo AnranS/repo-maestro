@@ -1,0 +1,16 @@
+spec: "demo plan — 验证 requires_approval_after 行为"
+tasks:
+  - id: T1_server
+    project: server
+    agent: mock
+    prompt: "改服务端，改完阻塞等审批"
+    depends_on: []
+    requires_approval_after: true
+    timeout_minutes: 5
+
+  - id: T2_web
+    project: web
+    agent: mock
+    prompt: "改前端"
+    depends_on: [T1_server]
+    timeout_minutes: 5

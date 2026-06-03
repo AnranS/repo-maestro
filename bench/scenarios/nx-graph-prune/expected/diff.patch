@@ -1,0 +1,43 @@
+From b3a6ef20ae7c209af5de73b96e97c56747a21e73 Mon Sep 17 00:00:00 2001
+From: FrozenPandaz <jasonjean1993@gmail.com>
+Date: Fri, 20 Feb 2026 13:59:47 -0500
+Subject: [PATCH] fix(core): retry entire transaction on DatabaseBusy, not just
+ BEGIN
+
+Previously the retry_db_operation_when_busy macro only wrapped
+conn.transaction() (the BEGIN step). Operations inside the transaction
+and the COMMIT were not retried, causing crashes when the DB was busy
+during those steps. Now the entire begin-execute-commit sequence is
+wrapped in a single retry macro call using and_then.
+---
+ packages/nx/src/native/db/connection.rs | 17 ++++++-----------
+ 1 file changed, 6 insertions(+), 11 deletions(-)
+
+diff --git a/packages/nx/src/native/db/connection.rs b/packages/nx/src/native/db/connection.rs
+index ef134952982..1e9e948990c 100644
+--- a/packages/nx/src/native/db/connection.rs
++++ b/packages/nx/src/native/db/connection.rs
+@@ -91,17 +91,12 @@ impl NxDbConnection {
+         transaction_operation: impl Fn(&Connection) -> rusqlite::Result<T>,
+     ) -> Result<T> {
+         if let Some(conn) = self.conn.as_mut() {
+-            let transaction = retry_db_operation_when_busy!(conn.transaction())
+-                .map_err(|e| anyhow::anyhow!("DB transaction error: {:?}", e))?;
+-
+-            let result = transaction_operation(&transaction)
+-                .map_err(|e| anyhow::anyhow!("DB transaction operation error: {:?}", e))?;
+-
+-            transaction
+-                .commit()
+-                .map_err(|e| anyhow::anyhow!("DB transaction commit error: {:?}", e))?;
+-
+-            Ok(result)
++            retry_db_operation_when_busy!(conn.transaction().and_then(|tx| {
++                let result = transaction_operation(&tx)?;
++                tx.commit()?;
++                Ok(result)
++            }))
++            .map_err(|e| anyhow::anyhow!("DB transaction error: {:?}", e))
+         } else {
+             anyhow::bail!("No database connection available")
+         }

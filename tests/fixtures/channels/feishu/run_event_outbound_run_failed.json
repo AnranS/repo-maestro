@@ -1,0 +1,1 @@
+{"event":{"schema_version":"maestro.run_event.v1","event_id":"evt-run-failed","run_id":"run-failed","seq":3,"timestamp":"2026-05-24T07:02:00Z","kind":"run.failed","message":"build failed","payload":{"exit_code":1}},"entry":{"enabled":true,"transport":"botmux","reply_to_run_events":["run.failed"],"redact_payload_over_kb":1},"options":{"dry_run":false}}

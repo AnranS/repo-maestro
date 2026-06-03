@@ -1,0 +1,146 @@
+From 91e4a6ca20901a1ad66ff9bcd822497ae0612119 Mon Sep 17 00:00:00 2001
+From: "copilot-swe-agent[bot]" <198982749+Copilot@users.noreply.github.com>
+Date: Fri, 20 Feb 2026 03:12:16 +0000
+Subject: [PATCH 1/5] Initial plan
+
+
+From 4da915d6c4833c0f34498be2c1091a16fbbcf961 Mon Sep 17 00:00:00 2001
+From: "copilot-swe-agent[bot]" <198982749+Copilot@users.noreply.github.com>
+Date: Fri, 20 Feb 2026 03:15:33 +0000
+Subject: [PATCH 2/5] fix: show AggregateError sub-errors during build
+
+Co-authored-by: sapphi-red <49056869+sapphi-red@users.noreply.github.com>
+---
+ packages/vite/src/node/cli.ts | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/packages/vite/src/node/cli.ts b/packages/vite/src/node/cli.ts
+index ebd40abc9dac9a..89bf1a8000d942 100644
+--- a/packages/vite/src/node/cli.ts
++++ b/packages/vite/src/node/cli.ts
+@@ -367,10 +367,14 @@ cli
+         await builder.buildApp()
+         await builder.runDevTools()
+       } catch (e) {
+-        createLogger(options.logLevel).error(
+-          colors.red(`error during build:\n${e.stack}`),
+-          { error: e },
+-        )
++        const logger = createLogger(options.logLevel)
++        let buildError = `error during build:\n${e.stack}`
++        if (e instanceof AggregateError) {
++          for (const error of e.errors) {
++            buildError += `\n${error.stack}`
++          }
++        }
++        logger.error(colors.red(buildError), { error: e })
+         process.exit(1)
+       } finally {
+         await stopProfiler((message) =>
+
+From c0fd75373426eb5d471156f932400e5b1a400d05 Mon Sep 17 00:00:00 2001
+From: "copilot-swe-agent[bot]" <198982749+Copilot@users.noreply.github.com>
+Date: Fri, 20 Feb 2026 03:30:32 +0000
+Subject: [PATCH 3/5] fix: use util.inspect to display AggregateError during
+ build
+
+Co-authored-by: sapphi-red <49056869+sapphi-red@users.noreply.github.com>
+---
+ packages/vite/src/node/cli.ts | 8 ++------
+ 1 file changed, 2 insertions(+), 6 deletions(-)
+
+diff --git a/packages/vite/src/node/cli.ts b/packages/vite/src/node/cli.ts
+index 89bf1a8000d942..92594c69f40603 100644
+--- a/packages/vite/src/node/cli.ts
++++ b/packages/vite/src/node/cli.ts
+@@ -1,5 +1,6 @@
+ import path from 'node:path'
+ import fs from 'node:fs'
++import { inspect } from 'node:util'
+ import { performance } from 'node:perf_hooks'
+ import { cac } from 'cac'
+ import colors from 'picocolors'
+@@ -368,12 +369,7 @@ cli
+         await builder.runDevTools()
+       } catch (e) {
+         const logger = createLogger(options.logLevel)
+-        let buildError = `error during build:\n${e.stack}`
+-        if (e instanceof AggregateError) {
+-          for (const error of e.errors) {
+-            buildError += `\n${error.stack}`
+-          }
+-        }
++        const buildError = `error during build:\n${inspect(e)}`
+         logger.error(colors.red(buildError), { error: e })
+         process.exit(1)
+       } finally {
+
+From b80b09e99366253dcffcd1495a83917492ca8dfc Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=E7=BF=A0?= <green@sapphi.red>
+Date: Fri, 20 Feb 2026 12:47:33 +0900
+Subject: [PATCH 4/5] chore: reduce diff
+
+---
+ packages/vite/src/node/cli.ts | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/packages/vite/src/node/cli.ts b/packages/vite/src/node/cli.ts
+index 92594c69f40603..d1befb4de043e8 100644
+--- a/packages/vite/src/node/cli.ts
++++ b/packages/vite/src/node/cli.ts
+@@ -368,9 +368,10 @@ cli
+         await builder.buildApp()
+         await builder.runDevTools()
+       } catch (e) {
+-        const logger = createLogger(options.logLevel)
+-        const buildError = `error during build:\n${inspect(e)}`
+-        logger.error(colors.red(buildError), { error: e })
++        createLogger(options.logLevel).error(
++          colors.red(`error during build:\n${inspect(e)}`),
++          { error: e },
++        )
+         process.exit(1)
+       } finally {
+         await stopProfiler((message) =>
+
+From f7a1c1098b00469002dd588cf1bb85fdd1b78bcf Mon Sep 17 00:00:00 2001
+From: "copilot-swe-agent[bot]" <198982749+Copilot@users.noreply.github.com>
+Date: Fri, 20 Feb 2026 04:10:25 +0000
+Subject: [PATCH 5/5] fix: use inspect(e) in all CLI error catch blocks
+
+Co-authored-by: sapphi-red <49056869+sapphi-red@users.noreply.github.com>
+---
+ packages/vite/src/node/cli.ts | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/packages/vite/src/node/cli.ts b/packages/vite/src/node/cli.ts
+index d1befb4de043e8..c851272b69e639 100644
+--- a/packages/vite/src/node/cli.ts
++++ b/packages/vite/src/node/cli.ts
+@@ -292,7 +292,7 @@ cli
+       } catch (e) {
+         const logger = createLogger(options.logLevel)
+         logger.error(
+-          colors.red(`error when starting dev server:\n${e.stack}`),
++          colors.red(`error when starting dev server:\n${inspect(e)}`),
+           {
+             error: e,
+           },
+@@ -411,7 +411,7 @@ cli
+         await optimizeDeps(config, options.force, true)
+       } catch (e) {
+         createLogger(options.logLevel).error(
+-          colors.red(`error when optimizing deps:\n${e.stack}`),
++          colors.red(`error when optimizing deps:\n${inspect(e)}`),
+           { error: e },
+         )
+         process.exit(1)
+@@ -462,7 +462,7 @@ cli
+         server.bindCLIShortcuts({ print: true })
+       } catch (e) {
+         createLogger(options.logLevel).error(
+-          colors.red(`error when starting preview server:\n${e.stack}`),
++          colors.red(`error when starting preview server:\n${inspect(e)}`),
+           { error: e },
+         )
+         process.exit(1)

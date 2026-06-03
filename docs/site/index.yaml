@@ -1,0 +1,61 @@
+version: 1
+languages: [en, zh]
+default_language: en
+
+title: maestro docs
+title_zh: maestro 文档
+description: Multi-project Agent orchestrator — design and usage reference.
+description_zh: 多项目 Agent 编排器 —— 设计与使用参考。
+
+groups:
+  - id: getting-started
+    title: Getting started
+    title_zh: 入门
+    pages:
+      - { id: overview,     title: "What is maestro?",        title_zh: "什么是 maestro？",            file: 00-overview.md }
+      - { id: quick-start,  title: "Quick start (10 min)", title_zh: "快速开始（10 分钟）",       file: 01-quick-start.md }
+      - { id: install,      title: "Install & uninstall", title_zh: "安装与卸载",              file: 02-install.md }
+
+  - id: concepts
+    title: Core concepts
+    title_zh: 核心概念
+    pages:
+      - { id: projects-yaml, title: "projects.yaml",                          title_zh: "projects.yaml",          file: 10-projects-yaml.md }
+      - { id: plans,         title: "PLAN.yaml & DAG runs",                   title_zh: "PLAN.yaml 与 DAG 执行",   file: 11-plans.md }
+      - { id: memory,        title: "Shared memory (L1 facts + L2 decisions)", title_zh: "共享记忆（L1 + L2）",     file: 12-memory.md }
+      - { id: skills,        title: "Skills playbooks",                       title_zh: "Skills 行动手册",         file: 13-skills.md }
+      - { id: contracts,     title: "Cross-project contracts",                title_zh: "跨项目契约",              file: 14-contracts.md }
+      - { id: learning,      title: "Failure-driven learning (guardrails)",   title_zh: "失败驱动的学习（guardrails）", file: 15-learning.md }
+
+  - id: workflow
+    title: Day-to-day workflow
+    title_zh: 日常工作流
+    pages:
+      - { id: chat,       title: "Chat with the orchestrator",            title_zh: "与编排 Agent 对话",            file: 20-chat.md }
+      - { id: actions,    title: "maestro-action blocks",                     title_zh: "maestro-action 协议",             file: 21-actions.md }
+      - { id: mailbox,    title: "Mailbox handoffs",                      title_zh: "Mailbox 交接",                 file: 22-mailbox.md }
+      - { id: approvals,  title: "Approval gates & cancellation",         title_zh: "审批门与取消",                 file: 23-approvals.md }
+      - { id: models,     title: "Agent model selection",                 title_zh: "Agent 模型选择",              file: 24-models.md }
+
+  - id: web
+    title: Web dashboard
+    title_zh: Web 面板
+    pages:
+      - { id: ui-tour, title: "Dashboard tour",     title_zh: "面板导览",  file: 30-ui-tour.md }
+      - { id: dags,    title: "DAG visualizations", title_zh: "DAG 可视化", file: 31-dags.md }
+
+  - id: reference
+    title: Reference
+    title_zh: 参考
+    pages:
+      - { id: cli,       title: "CLI reference",       title_zh: "CLI 参考",        file: 40-cli.md }
+      - { id: layout,    title: "On-disk layout (.maestro/)", title_zh: "磁盘布局 (.maestro/)", file: 41-layout.md }
+      - { id: protocols, title: "maestro-action protocol", title_zh: "maestro-action 协议详解", file: 42-protocols.md }
+      - { id: api,       title: "HTTP API",            title_zh: "HTTP API",        file: 43-api.md }
+
+  - id: ops
+    title: Operations
+    title_zh: 运维与排错
+    pages:
+      - { id: troubleshooting, title: "Troubleshooting", title_zh: "排错指南", file: 50-troubleshooting.md }
+      - { id: faq,             title: "FAQ",             title_zh: "FAQ",      file: 51-faq.md }

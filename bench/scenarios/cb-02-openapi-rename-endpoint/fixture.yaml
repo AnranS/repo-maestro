@@ -1,0 +1,14 @@
+id: cb-02-openapi-rename-endpoint
+kind: contract-break
+goal: "Detect an OpenAPI endpoint rename from /v1/users to /v1/people"
+expected:
+  touched_files:
+    - producer/openapi.yaml
+    - consumer/client_route_test.sh
+  required_projects: [producer, consumer]
+  required_contract_consumers: [consumer]
+  forbidden_files: []
+budget:
+  max_runtime_secs: 60
+  max_tasks: 4
+tools_required: [sh]

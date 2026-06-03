@@ -1,0 +1,20 @@
+id: sst-provider-add
+kind: oss-replay
+goal: "fix(win32): normalize paths at permission boundaries"
+upstream:
+  url: https://github.com/anomalyco/opencode
+  parent_sha: 0042a07052ec0db777b2ea8bff46101466f0a942
+  pr_url: https://github.com/anomalyco/opencode/pull/14738
+expected:
+  touched_files:
+    - packages/opencode/src/tool/external-directory.ts
+    - packages/opencode/src/util/wildcard.ts
+    - packages/opencode/test/tool/bash.test.ts
+    - packages/opencode/test/tool/read.test.ts
+    - packages/opencode/test/util/wildcard.test.ts
+  required_projects: [opencode]
+  required_contract_consumers: []
+  forbidden_files: []
+budget:
+  max_runtime_secs: 120
+  max_tasks: 8

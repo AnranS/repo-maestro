@@ -1,0 +1,16 @@
+id: nx-graph-prune
+kind: oss-replay
+goal: "fix(core): retry entire SQLite transaction on DatabaseBusy"
+upstream:
+  url: https://github.com/nrwl/nx
+  parent_sha: ed786fb12c0637cdbcf0925dab7f71b9632317f6
+  pr_url: https://github.com/nrwl/nx/pull/34533
+expected:
+  touched_files:
+    - packages/nx/src/native/db/connection.rs
+  required_projects: [nx]
+  required_contract_consumers: []
+  forbidden_files: []
+budget:
+  max_runtime_secs: 120
+  max_tasks: 8

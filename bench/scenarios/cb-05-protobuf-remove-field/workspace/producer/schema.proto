@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package bench.contracts;
+
+message User {
+  string id = 1;
+  reserved 2;
+  reserved "email";
+}
