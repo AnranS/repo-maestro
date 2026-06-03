@@ -9,6 +9,7 @@ import type {
   DefaultsConfig,
   DocsIndex,
   ExternalListing,
+  Finding,
   FsListing,
   MailMessage,
   TaskDiff,
@@ -52,6 +53,9 @@ export const api = {
   },
   async runEvidence(id: string = "current"): Promise<RunEvidence> {
     return json(await fetch(`/api/runs/${encodeURIComponent(id)}/evidence`))
+  },
+  async runFindings(id: string = "current"): Promise<Finding[]> {
+    return json(await fetch(`/api/runs/${encodeURIComponent(id)}/findings`))
   },
   async runReplay(id: string = "current"): Promise<RunReplay> {
     return json(await fetch(`/api/runs/${encodeURIComponent(id)}/replay`))

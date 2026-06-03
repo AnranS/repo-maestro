@@ -71,6 +71,8 @@ export const zh: Record<string, string> = {
   "tasks.tasks": "任务",
   "tasks.coordination": "协同",
   "tasks.coordinationCount": "{open} 未解决 · {total} 条",
+  "tasks.findings": "发现",
+  "tasks.findingsCount": "{n} 条",
   "tasks.resolved": "已解决",
   "ask.submit": "提交",
   "approval.approve": "批准",

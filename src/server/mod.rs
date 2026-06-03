@@ -48,6 +48,7 @@ pub fn build_app(st: ServerState) -> Router {
         .route("/api/runs", get(runs::runs_handler))
         .route("/api/runs/:id", get(runs::run_handler))
         .route("/api/runs/:id/evidence", get(runs::run_evidence_handler))
+        .route("/api/runs/:id/findings", get(runs::run_findings_handler))
         .route("/api/runs/:id/replay", get(runs::run_replay_handler))
         .route("/api/runs/:id/pr-body", get(runs::run_pr_body_handler))
         .route(

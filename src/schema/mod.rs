@@ -10,6 +10,7 @@ pub const RUN_EVENT_V1: &str = "maestro.run_event.v1";
 pub const ARTIFACT_MANIFEST_V1: &str = "maestro.artifact_manifest.v1";
 pub const TRAJECTORY_EVENT_V1: &str = "maestro.trajectory_event.v1";
 pub const CHANNEL_ENVELOPE_V1: &str = "maestro.channel_envelope.v1";
+pub const FINDING_V1: &str = "maestro.finding.v1";
 
 pub fn provider_capability_version() -> String {
     PROVIDER_CAPABILITY_V1.to_string()
@@ -33,4 +34,8 @@ pub fn trajectory_event_version() -> String {
 
 pub fn channel_envelope_version() -> String {
     CHANNEL_ENVELOPE_V1.to_string()
+}
+
+pub fn finding_version() -> String {
+    FINDING_V1.to_string()
 }

@@ -4,6 +4,7 @@ pub mod events;
 pub mod evidence;
 pub mod executor;
 pub(crate) mod executor_util;
+pub mod findings;
 pub mod liveness;
 pub mod reactions;
 pub mod replan;

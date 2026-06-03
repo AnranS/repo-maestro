@@ -21,6 +21,7 @@ use crate::paths;
 use super::dag::TaskGraph;
 use super::events::{self, RunEventKind};
 use super::executor_util::*;
+use super::findings::{self, Finding, FindingKind, Severity};
 use super::replan;
 use super::state::{AutoAction, RunState, RunStatus, TaskStatus, WorkflowOutputState};
 use super::trajectory;
@@ -404,6 +405,35 @@ impl RunCtx {
             self.channels.as_ref(),
             self.dry_run,
         );
+    }
+
+    /// Append a finding to this run's ledger (F-110). Best-effort: a ledger
+    /// write failing must never break the run, so we log and move on, mirroring
+    /// `record`. Summaries must stay neutral + single-line; no evidence path is
+    /// attached here (these findings carry only `task_id` for the dashboard to
+    /// join against events/artifacts).
+    fn record_finding(
+        &self,
+        kind: FindingKind,
+        severity: Severity,
+        source: &str,
+        summary: impl Into<String>,
+        task: Option<&str>,
+    ) {
+        let mut finding = Finding::new(
+            &self.run_id,
+            kind,
+            severity,
+            source,
+            summary,
+            Utc::now().to_rfc3339(),
+        );
+        if let Some(t) = task {
+            finding = finding.task(t);
+        }
+        if let Err(e) = findings::append_finding(&self.run_dir, finding) {
+            tracing::warn!("could not append {source} finding: {e:#}");
+        }
     }
 
     /// Persist the shared state to disk.
@@ -845,6 +875,13 @@ async fn handle_task_review(
                 tracing::debug!(
                     "task {task_id} high-risk + refute_on_high_risk → attaching builtin refuter"
                 );
+                ctx.record_finding(
+                    FindingKind::Refute,
+                    Severity::High,
+                    "refuter",
+                    "high-risk change escalated to adversarial refuter review",
+                    Some(task_id),
+                );
                 role
             }
             None => return Ok(LoopFlow::Proceed),
@@ -1076,6 +1113,15 @@ async fn handle_post_task_approval(
     // the run opts into risk-driven oversight (`defaults.gate_on_high_risk`).
     // Same helper the review step used, so both see one classification.
     let high_risk = compute_and_store_risk(ctx, projects, task_id, &t.project).await;
+    if high_risk {
+        ctx.record_finding(
+            FindingKind::Risk,
+            Severity::High,
+            "risk-gate",
+            "high-risk change classified for this task",
+            Some(task_id),
+        );
+    }
     ctx.write_state().await?;
 
     let risk_gated = high_risk && projects.defaults.gate_on_high_risk;

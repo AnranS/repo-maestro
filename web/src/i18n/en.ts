@@ -85,6 +85,8 @@ export const en: Record<string, string> = {
   "tasks.tasks": "tasks",
   "tasks.coordination": "coordination",
   "tasks.coordinationCount": "{open} open · {total} total",
+  "tasks.findings": "findings",
+  "tasks.findingsCount": "{n} total",
   "tasks.resolved": "resolved",
   "ask.submit": "Submit",
   "approval.approve": "Approve",

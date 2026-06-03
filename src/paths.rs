@@ -10,6 +10,7 @@ pub const CANCELS_DIR: &str = "cancels";
 pub const CURRENT_LINK: &str = "current";
 pub const RUN_STATE_FILE: &str = "RUN_STATE.json";
 pub const RUN_EVENTS_FILE: &str = "events.ndjson";
+pub const RUN_FINDINGS_FILE: &str = "findings.ndjson";
 pub const PLAN_SNAPSHOT: &str = "PLAN.yaml";
 pub const RUN_REPORT_FILE: &str = "REPORT.md";
 pub const LOGS_DIR: &str = "logs";

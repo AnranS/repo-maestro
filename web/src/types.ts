@@ -213,6 +213,28 @@ export interface RunEvidence {
   browser: BrowserEvidenceSummary
 }
 
+/** One record in a run's finding ledger (F-110). */
+export interface Finding {
+  schema_version: string
+  finding_id: string
+  run_id: string
+  seq: number
+  task_id?: string
+  kind: "risk" | "refute" | "approval" | "learn" | "doctor" | "channel"
+  severity: "info" | "low" | "medium" | "high" | "critical"
+  confidence?: number
+  summary: string
+  evidence_refs: string[]
+  source: string
+  status: "open"
+  created_at: string
+  provenance?: {
+    producer: string
+    producer_version?: string
+    inputs_digest?: string
+  }
+}
+
 export interface ReplayEvent {
   seq: number
   timestamp: string

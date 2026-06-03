@@ -8,6 +8,7 @@ import { TaskRow } from "./TaskRow"
 import { GoalPanel } from "./GoalPanel"
 import { EvidencePanel } from "./tasks/EvidencePanel"
 import { CoordinationPanel } from "./tasks/CoordinationPanel"
+import { FindingsPanel } from "./tasks/FindingsPanel"
 import { RunTimeline } from "./tasks/RunTimeline"
 import { AutoActionsPanel, CostPanel, RunSummaryStrip, StatusPill, taskSummary } from "./tasks/RunSummary"
 import { FailureRecoveryPanel } from "./tasks/FailureRecoveryPanel"
@@ -199,6 +200,11 @@ export function TasksView({ state, onJumpToSession }: Props) {
         )}
 
         {evidence && <EvidencePanel evidence={evidence} replay={replay} prBody={prBody} />}
+
+        <FindingsPanel
+          runId={state.run_id}
+          refreshKey={`${state.run_id}:${summary.terminal}:${summary.running}`}
+        />
 
         <CoordinationPanel
           refreshKey={`${state.run_id}:${summary.terminal}:${summary.running}`}

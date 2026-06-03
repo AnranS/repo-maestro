@@ -151,6 +151,20 @@ pub async fn run_evidence_handler(Path(id): Path<String>) -> Response {
     }
 }
 
+/// The run's finding ledger (F-110), append-order. Powers the run-detail
+/// findings count/list. Returns `[]` for a run with no findings yet.
+pub async fn run_findings_handler(Path(id): Path<String>) -> Response {
+    let run_dir = match run_dir_from_id(&id) {
+        Ok(Some(dir)) => dir,
+        Ok(None) => return (StatusCode::NOT_FOUND, "run not found").into_response(),
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+    };
+    match crate::scheduler::findings::read_findings(&run_dir) {
+        Ok(findings) => Json(findings).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    }
+}
+
 pub async fn run_replay_handler(Path(id): Path<String>) -> Response {
     let run_dir = match run_dir_from_id(&id) {
         Ok(Some(dir)) => dir,

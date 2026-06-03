@@ -59,6 +59,21 @@ pub fn force_cancel_if_abandoned(run_dir: &Path) -> Result<bool> {
         }
     }
     state.write_atomic()?;
+    // Record the abandoned run to the per-run finding ledger (F-110). Runs only
+    // on the reconcile that actually force-cancels (idempotent above), so a
+    // dead run yields one `doctor` finding, not one per poll. Best-effort: a
+    // ledger write must never undo the cancel we just persisted.
+    let finding = super::findings::Finding::new(
+        &state.run_id,
+        super::findings::FindingKind::Doctor,
+        super::findings::Severity::Medium,
+        "liveness",
+        "run abandoned (owner process not alive); force-cancelled",
+        now.to_rfc3339(),
+    );
+    if let Err(e) = super::findings::append_finding(run_dir, finding) {
+        tracing::warn!("could not append abandoned-run finding: {e:#}");
+    }
     Ok(true)
 }
 
@@ -178,6 +193,30 @@ mod tests {
         let t = reloaded.tasks.get("T_x").unwrap();
         assert_eq!(t.status, TaskStatus::Cancelled);
         assert!(t.ended_at.is_some(), "task ended_at must be stamped");
+    }
+
+    #[test]
+    fn force_cancel_writes_a_doctor_finding_to_the_ledger() {
+        use crate::scheduler::findings::{read_findings, FindingKind, FindingStatus};
+        let tmp = tempdir().unwrap();
+        make_running_run(tmp.path(), 999_999); // dead pid
+
+        assert!(force_cancel_if_abandoned(tmp.path()).unwrap());
+
+        // The producer wrote a finding the ledger can parse back (F-110 Step 2
+        // integration path).
+        let findings = read_findings(tmp.path()).unwrap();
+        assert_eq!(findings.len(), 1);
+        let f = &findings[0];
+        assert_eq!(f.kind, FindingKind::Doctor);
+        assert_eq!(f.finding_id, "doctor-1");
+        assert_eq!(f.run_id, "r-test");
+        assert_eq!(f.status, FindingStatus::Open);
+        assert!(f.summary.contains("abandoned"));
+
+        // Idempotent: a second reconcile is a no-op and writes no new finding.
+        assert!(!force_cancel_if_abandoned(tmp.path()).unwrap());
+        assert_eq!(read_findings(tmp.path()).unwrap().len(), 1);
     }
 
     #[test]
