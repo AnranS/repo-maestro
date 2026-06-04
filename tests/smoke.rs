@@ -184,14 +184,14 @@ fn run_events_append_and_read_in_order() {
     assert_eq!(events[0].event_id, "run-1-1");
     assert_eq!(events[1].kind, RunEventKind::TaskStarted);
     assert_eq!(events[1].task_id.as_deref(), Some("T1"));
-    assert_eq!(events[0].schema_version, "maestro.run_event.v1");
+    assert_eq!(events[0].schema_version, "maestro.run_event.v2");
     assert_eq!(events[0].kind.as_str(), "run.started");
     assert_eq!(events[1].kind.as_str(), "task.started");
     assert!(events[0].refs.is_empty());
 
     let raw = std::fs::read_to_string(tmp.path().join("events.ndjson")).unwrap();
     let first: serde_json::Value = serde_json::from_str(raw.lines().next().unwrap()).unwrap();
-    assert_eq!(first["schema_version"], "maestro.run_event.v1");
+    assert_eq!(first["schema_version"], "maestro.run_event.v2");
     assert_eq!(first["kind"], "run.started");
     assert!(first["refs"].as_object().unwrap().is_empty());
 

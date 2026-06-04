@@ -1335,7 +1335,7 @@ mod tests {
         assert!(
             ev.message
                 .as_deref()
-                .map_or(true, |m| !m.contains("VERYSECRET")),
+                .is_none_or(|m| !m.contains("VERYSECRET")),
             "no finding body in message"
         );
         let r = ev.refs.get("findings").expect("findings ref");
@@ -1354,9 +1354,8 @@ mod tests {
             "2026-05-24T08:00:00Z",
         )
         .confidence(2.0);
-        match append_finding(temp.path(), bad) {
-            Ok(written) => project_finding_event(temp.path(), &written, None, false),
-            Err(_) => {}
+        if let Ok(written) = append_finding(temp.path(), bad) {
+            project_finding_event(temp.path(), &written, None, false);
         }
         let events = read_events(temp.path()).unwrap();
         assert!(events

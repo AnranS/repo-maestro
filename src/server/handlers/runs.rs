@@ -1084,7 +1084,7 @@ mod monitor_tests {
         assert!(proj
             .message
             .as_deref()
-            .map_or(true, |m| !m.contains("DOGFOODSECRET")));
+            .is_none_or(|m| !m.contains("DOGFOODSECRET")));
 
         unsafe { std::env::remove_var("MAESTRO_WORKSPACE_ROOT") };
     }
