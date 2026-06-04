@@ -38,6 +38,17 @@ pub enum FindingKind {
 }
 
 impl FindingKind {
+    /// Every variant, in declaration order. Single source of truth for callers
+    /// that need to enumerate or validate kinds (e.g. F-114 profile outputs).
+    pub const ALL: [FindingKind; 6] = [
+        Self::Risk,
+        Self::Refute,
+        Self::Approval,
+        Self::Learn,
+        Self::Doctor,
+        Self::Channel,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Risk => "risk",
@@ -47,6 +58,13 @@ impl FindingKind {
             Self::Doctor => "doctor",
             Self::Channel => "channel",
         }
+    }
+
+    /// Parse a kind name (the inverse of [`as_str`]). `None` for an unknown
+    /// string — callers (e.g. an F-114 profile's declared `finding_kind`) treat
+    /// that as "no marker" rather than erroring.
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_str() == s.trim())
     }
 }
 

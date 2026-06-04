@@ -21,6 +21,9 @@ pub mod codes {
     pub const DANGLING_CONTRACT: &str = "plan.dangling_contract";
     pub const SHELL_SYNTAX: &str = "plan.shell_syntax";
     pub const SIZE_WARNING: &str = "plan.size_warning";
+    /// A task `agent_profile` / `review_profile` names a profile that is not
+    /// defined in `defaults.agent_profiles`, or names a disabled one (F-114).
+    pub const UNKNOWN_AGENT_PROFILE: &str = "plan.unknown_agent_profile";
     /// Generic fallback for a structural validate failure that has no more
     /// specific code yet (duplicate id, unknown dep, empty prompt, …).
     pub const PLAN_INVALID: &str = "plan.invalid";

@@ -18,6 +18,17 @@ defaults:                         # applied to every project unless overridden
     balanced:
       preferred: gpt-5.2
       fallback: [composer-2, composer-2-fast]
+  agent_profiles:                 # F-114: named specialist bundles (role + skills + model_profile + triggers)
+    contract-reviewer:
+      role: refuter               # an existing role name
+      skills: [_global/contract-first]
+      model_profile: balanced     # an existing defaults.model_profiles entry
+      triggers:                   # auto-match when ANY fires (closed v1 set)
+        - on: contract_changed
+        - on: path_changed
+          patterns: ["idl/**", "schemas/**"]
+      outputs:
+        - review_verdict: true    # runs read-only, ends with VERDICT: pass|fail
   branch_prefix: feat/            # used when maestro creates branches
   max_parallel: 4                 # DAG concurrency cap
   max_total_tasks: 1000           # refuse a run whose plan exceeds this many tasks (0 = unlimited)
@@ -42,6 +53,7 @@ projects:
     agent: cursor                 # override default; "shell" to run raw commands
     agent_model: gpt-5.2          # override per-project model
     model_profile: balanced       # fallback-chain override; wins over agent_model
+    review_profile: contract-reviewer  # F-114: default review specialist (by name) for this project
     memory_scope:                 # which L1 facts to auto-inject
       - api
       - schema
@@ -71,6 +83,7 @@ projects:
 | `tagger_model` | `""` | Model used by the chat auto-tagger. Prefer a cheap model. Falls back to `agent_model`. |
 | `model_profile` | unset | Named profile from `defaults.model_profiles` to use when no task/run/project profile is set. |
 | `model_profiles` | `{}` | Named fallback chains. Each profile has `preferred` plus ordered `fallback` model ids. |
+| `agent_profiles` | `{}` | **F-114** named specialist bundles. Each composes an existing `role` + `skills` + `model_profile` (+ optional `context_budget_bytes`, `priority`) with `triggers` (a closed set — see below) and an `outputs` contract. Referenced by name from a project/task (`agent_profile` / `review_profile`), or auto-matched by trigger. `maestro validate` checks every profile's structure (non-empty `role`, well-formed triggers, known `finding_kind`s), that its `role` and `skills` **exist** on disk, that its `model_profile` is defined, and the references that point at it. Triggers: pre-dispatch `task_kind` / `project_type` / `project_stack` / `project_has_contract` / `issue_code`; post-task `contract_changed` / `high_risk` / `path_changed` / `finding_kind`. Outputs: `finding_kind` (F-110), `review_verdict` (runs through the `review_by` path), `issue_codes` (F-111). Resolution is live: at dispatch a writer profile fills role/skills/model_profile gaps (never overriding an explicit task field), and after a task a review-capable profile runs before the `refute_on_high_risk` fallback. A management CLI + UI label land in later F-114 steps; see `docs/experience/F-114-SPECIALIST-AGENT-PROFILES-DESIGN.md`. |
 | `branch_prefix` | `feat/` | Used by any agent that creates feature branches. |
 | `max_parallel` | `4` | Max simultaneous tasks across the DAG. |
 | `max_total_tasks` | `1000` | Hard ceiling on the total tasks a single run may execute (counted after `project_each` expansion). A runaway synthesized plan over this is **refused, not truncated**, with an actionable error. `0` disables the cap. Not applied to `rerun`/`resume`, which recover an already-admitted plan. |
@@ -91,6 +104,8 @@ projects:
 | `agent_model` | no | Per-project model override used after task/run/profile resolution. |
 | `cursor_model` | no | Legacy alias for `agent_model`; retained for existing workspaces. |
 | `model_profile` | no | Per-project fallback-chain override. Resolved before `agent_model`. |
+| `agent_profile` | no | **F-114**: name of a `defaults.agent_profiles` entry to use as the default **writer** specialist for this project. Fills a task's `role`/`skills`/`model_profile` gaps but never overrides an explicit task `role`. Must reference an enabled profile (`maestro validate` enforces this). |
+| `review_profile` | no | **F-114**: name of a `defaults.agent_profiles` entry to use as the default **review** specialist. Consulted when a task has no explicit `review_by`, before the `refute_on_high_risk` fallback. Must reference an enabled profile. |
 | `memory_scope` | no | List of subdirectory names under `.maestro/memory/l1_facts/` whose markdown files should be auto-injected into this project's task prompts. |
 | `contracts.provides` | no | A single contract file this project authors. Other projects can `consumes` it to declare dependency. |
 | `contracts.consumes` | no | A single contract file this project depends on. |
@@ -136,6 +151,19 @@ maestro validate
 ```
 
 `maestro validate` checks paths exist, contracts reference real files (when present), and there are no name collisions.
+
+### Specialist profiles (F-114)
+
+```bash
+maestro agent-profile new contract-reviewer --template contract-reviewer  # disabled draft
+maestro agent-profile ls
+maestro agent-profile show contract-reviewer
+maestro agent-profile eval contract-reviewer --fixture facts.yaml          # dry-run trigger matching
+maestro agent-profile train recovery-doctor --from-run <run-id>            # distill a draft from a run
+maestro agent-profile promote contract-reviewer                            # enable after validation
+```
+
+`new` writes a **disabled** draft under `defaults.agent_profiles` (edit it, then promote). `eval` reads a `MatchFacts` fixture (`task_kind`, `project_type`, `changed_paths`, `high_risk`, `contract_changed`, `finding_kinds`, …) and reports which triggers fire and what the profile would hand off — without running the agent. `train` distills a disabled draft from a prior run's shape (roles, triggered skills, risk levels, finding kinds) — deterministic, **not** model fine-tuning, and it writes only neutral config (no transcripts, paths, or project names). It keeps only `_global/<skill>` (and bare unscoped) skills and **drops project-scoped (`<project>/<skill>`) references** — they'd leak the project name and wouldn't generalize — reporting just a dropped count; add them back manually if intended. `promote` enables a draft once validation passes and it has at least one trigger or a project binding. Templates: `blank`, `contract-reviewer`, `release-privacy-reviewer`, `recovery-doctor`.
 
 ## Adding from the dashboard
 

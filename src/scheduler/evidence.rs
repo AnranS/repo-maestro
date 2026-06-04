@@ -1039,6 +1039,8 @@ mod tests {
             usage: None,
             steps: None,
             role: None,
+            resolved_agent_profile: None,
+            resolved_review_profile: None,
             workspace_path: Some(format!("/tmp/{project}")),
             worktree_path: None,
         }

@@ -43,6 +43,8 @@ export interface TaskState {
   usage?: Usage | null
   steps?: number | null
   role?: string | null
+  resolved_agent_profile?: string | null
+  resolved_review_profile?: string | null
   workspace_path?: string | null
   worktree_path?: string | null
 }

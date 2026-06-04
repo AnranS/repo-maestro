@@ -1,3 +1,4 @@
+use super::agent_profile::AgentProfile;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -73,6 +74,13 @@ pub struct Defaults {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_profiles: BTreeMap<String, ModelProfile>,
 
+    /// F-114 named specialist agent profiles. Each composes an existing
+    /// `role` + `skills` + `model_profile` with triggers and an output
+    /// contract; a project or task references one by name, or the resolver
+    /// auto-matches by trigger. Empty by default.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub agent_profiles: BTreeMap<String, AgentProfile>,
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub copy_files: Vec<String>,
 
@@ -132,6 +140,7 @@ impl Default for Defaults {
             tagger_model: None,
             model_profile: None,
             model_profiles: BTreeMap::new(),
+            agent_profiles: BTreeMap::new(),
             copy_files: Vec::new(),
             gate_on_high_risk: false,
             routing: Vec::new(),
@@ -203,6 +212,19 @@ pub struct Project {
     /// prelude" — the task gets the bare prompt + memory only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+
+    /// F-114: default writer specialist for tasks in this project, by name into
+    /// `defaults.agent_profiles`. Fills the task's role/skills/model_profile
+    /// gaps but never overrides an explicit `PlanTask` field. `None` means
+    /// "use existing routing".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_profile: Option<String>,
+
+    /// F-114: default review specialist for tasks in this project, by name into
+    /// `defaults.agent_profiles`. Used when a task has no explicit `review_by` /
+    /// `review_profile`, before the F-106 high-risk refuter fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_profile: Option<String>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub copy_files: Vec<String>,
@@ -494,6 +516,51 @@ impl ProjectsConfig {
             .filter(|m| !m.trim().is_empty())
             .or_else(|| self.defaults.effective_agent_model().map(str::to_string))
     }
+
+    /// F-114 validation: structural problems in `defaults.agent_profiles` plus
+    /// the cross-config references that a single profile can't see — a
+    /// `model_profile` that isn't defined, and project-level
+    /// `agent_profile` / `review_profile` pointers to a missing or disabled
+    /// profile. Pure (no filesystem); each string is one human-readable issue.
+    /// Empty = valid. Task-level (`PlanTask`) profile references are validated
+    /// separately by `plan validate`, which has the plan in hand.
+    pub fn agent_profile_issues(&self) -> Vec<String> {
+        let mut out = vec![];
+        let profiles = &self.defaults.agent_profiles;
+
+        for (name, profile) in profiles {
+            for issue in profile.issues() {
+                out.push(format!("agent_profile '{name}': {issue}"));
+            }
+            if let Some(mp) = &profile.model_profile {
+                if !self.defaults.model_profiles.contains_key(mp.trim()) {
+                    out.push(format!(
+                        "agent_profile '{name}': model_profile '{mp}' is not defined under defaults.model_profiles"
+                    ));
+                }
+            }
+        }
+
+        for (pname, proj) in &self.projects {
+            for (field, reference) in [
+                ("agent_profile", &proj.agent_profile),
+                ("review_profile", &proj.review_profile),
+            ] {
+                let Some(reference) = reference else { continue };
+                match profiles.get(reference) {
+                    None => out.push(format!(
+                        "project '{pname}': {field} '{reference}' is not defined under defaults.agent_profiles"
+                    )),
+                    Some(p) if !p.enabled => out.push(format!(
+                        "project '{pname}': {field} '{reference}' refers to a disabled profile"
+                    )),
+                    Some(_) => {}
+                }
+            }
+        }
+
+        out
+    }
 }
 
 struct TmpGuard {
@@ -564,6 +631,8 @@ mod tests {
                 cursor_model: Some("project-model".into()),
                 model_profile: Some("deep".into()),
                 role: None,
+                agent_profile: None,
+                review_profile: None,
                 copy_files: Vec::new(),
             },
         );
@@ -591,10 +660,89 @@ mod tests {
                 cursor_model: None,
                 model_profile: None,
                 role: None,
+                agent_profile: None,
+                review_profile: None,
                 copy_files: Vec::new(),
             },
         );
         cfg
+    }
+
+    #[test]
+    fn agent_profile_issues_flags_references_and_model_profile() {
+        use crate::config::agent_profile::ProfileOutput;
+
+        let mut cfg = cfg_with_project("api");
+        // a structurally-valid, enabled reviewer that names a known model_profile
+        cfg.defaults.model_profiles.insert(
+            "deep".into(),
+            ModelProfile {
+                preferred: Some("gpt-5.2".into()),
+                fallback: vec![],
+            },
+        );
+        cfg.defaults.agent_profiles.insert(
+            "reviewer".into(),
+            AgentProfile {
+                role: "refuter".into(),
+                skills: vec![],
+                model_profile: Some("deep".into()),
+                context_budget_bytes: None,
+                priority: 0,
+                triggers: vec![],
+                outputs: vec![ProfileOutput {
+                    finding_kind: None,
+                    review_verdict: true,
+                    issue_codes: vec![],
+                }],
+                enabled: true,
+            },
+        );
+        // a disabled draft, and a profile naming an undefined model_profile
+        cfg.defaults.agent_profiles.insert(
+            "draft".into(),
+            AgentProfile {
+                role: "backend".into(),
+                skills: vec![],
+                model_profile: Some("ghost".into()),
+                context_budget_bytes: None,
+                priority: 0,
+                triggers: vec![],
+                outputs: vec![],
+                enabled: false,
+            },
+        );
+
+        // happy path: valid reference to the enabled reviewer → no issue
+        cfg.projects.get_mut("api").unwrap().review_profile = Some("reviewer".into());
+        assert!(
+            cfg.agent_profile_issues()
+                .iter()
+                .all(|m| !m.contains("review_profile")),
+            "valid review_profile should not error: {:?}",
+            cfg.agent_profile_issues()
+        );
+
+        // undefined model_profile on the draft is always flagged
+        let issues = cfg.agent_profile_issues();
+        assert!(
+            issues
+                .iter()
+                .any(|m| m.contains("agent_profile 'draft'") && m.contains("'ghost'")),
+            "{issues:?}"
+        );
+
+        // project references a missing writer profile + a disabled reviewer
+        let p = cfg.projects.get_mut("api").unwrap();
+        p.agent_profile = Some("nope".into());
+        p.review_profile = Some("draft".into());
+        let issues = cfg.agent_profile_issues();
+        assert!(issues
+            .iter()
+            .any(|m| m.contains("agent_profile 'nope'") && m.contains("not defined")));
+        assert!(issues
+            .iter()
+            .any(|m| m.contains("review_profile 'draft'") && m.contains("disabled")));
     }
 
     #[test]

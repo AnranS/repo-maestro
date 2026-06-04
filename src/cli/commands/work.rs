@@ -619,6 +619,8 @@ mod tests {
                 cursor_model: None,
                 model_profile: Some("strong".into()),
                 role: Some("backend_rust".into()),
+                agent_profile: None,
+                review_profile: None,
                 copy_files: vec![".env.example".into()],
             }
         }
@@ -644,6 +646,8 @@ mod tests {
                 cursor_model: None,
                 model_profile: None,
                 role: None,
+                agent_profile: None,
+                review_profile: None,
                 copy_files: vec![],
             }
         }

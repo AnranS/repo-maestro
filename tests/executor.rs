@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use maestro::config::{Plan, Project, ProjectsConfig};
+use maestro::config::{AgentProfile, Plan, Project, ProjectsConfig};
 use maestro::modes::AllowedTools;
 use maestro::scheduler::trajectory::read_trajectory;
 use maestro::scheduler::{run_plan, ExecConfig, RunStatus, TaskStatus};
@@ -59,6 +59,8 @@ fn projects_for(workspace: &std::path::Path, names: &[&str]) -> ProjectsConfig {
                 cursor_model: None,
                 model_profile: None,
                 role: None,
+                agent_profile: None,
+                review_profile: None,
                 copy_files: Vec::new(),
             },
         );
@@ -197,6 +199,227 @@ tasks:
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(manifest_path).unwrap()).unwrap();
     assert_eq!(manifest["schema_version"], "maestro.artifact_manifest.v1");
+
+    clear_workspace();
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn f114_writer_profile_is_lowered_and_recorded_in_task_state() {
+    // End-to-end: a project-bound `agent_profile` is resolved at dispatch, its
+    // role lowered into the task, and its name recorded as provenance in
+    // RunState (the wiring the unit tests can't see).
+    let dir = make_workspace();
+    ensure_dirs(dir.path(), &["api"]);
+    let mut projects = projects_for(dir.path(), &["api"]);
+    projects.defaults.agent_profiles.insert(
+        "writer".into(),
+        AgentProfile {
+            role: "backend_rust".into(), // builtin role
+            skills: vec![],
+            model_profile: None,
+            context_budget_bytes: None,
+            priority: 0,
+            triggers: vec![],
+            outputs: vec![],
+            enabled: true,
+        },
+    );
+    projects.projects.get_mut("api").unwrap().agent_profile = Some("writer".into());
+
+    let plan = parse_plan(
+        r#"
+spec: writer profile
+tasks:
+  - id: T0
+    project: api
+    kind: verify
+    agent: shell
+    command: "echo ok"
+"#,
+    );
+    let final_state = run_plan(plan, projects, ExecConfig::default())
+        .await
+        .expect("run_plan");
+
+    let t0 = &final_state.tasks["T0"];
+    assert_eq!(t0.status, TaskStatus::Done);
+    assert_eq!(
+        t0.resolved_agent_profile.as_deref(),
+        Some("writer"),
+        "the bound profile name is recorded as provenance"
+    );
+    assert_eq!(
+        t0.role.as_deref(),
+        Some("backend_rust"),
+        "the profile's role is lowered into the task"
+    );
+
+    clear_workspace();
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn f114_dispatch_fails_fast_on_unknown_project_agent_profile() {
+    // A project that pins a profile the workspace never defines must fail the
+    // task at dispatch, not silently fall back to default routing.
+    let dir = make_workspace();
+    ensure_dirs(dir.path(), &["api"]);
+    let mut projects = projects_for(dir.path(), &["api"]);
+    projects.projects.get_mut("api").unwrap().agent_profile = Some("ghost".into());
+
+    let plan = parse_plan(
+        r#"
+spec: bad profile
+tasks:
+  - id: T0
+    project: api
+    kind: agent
+    agent: mock
+    prompt: "do thing"
+"#,
+    );
+    let final_state = run_plan(plan, projects, ExecConfig::default())
+        .await
+        .expect("run_plan");
+
+    let t0 = &final_state.tasks["T0"];
+    assert_eq!(t0.status, TaskStatus::Failed);
+    assert!(
+        t0.error.as_deref().unwrap_or_default().contains("ghost"),
+        "failure must name the undefined profile: {:?}",
+        t0.error
+    );
+
+    clear_workspace();
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn f114_review_profile_provenance_is_recorded_in_task_state() {
+    // Step 7: a project `review_profile` that runs is recorded on the task as
+    // `resolved_review_profile` (the provenance the UI label shows).
+    let dir = make_workspace();
+    ensure_dirs(dir.path(), &["api"]);
+    let mut projects = projects_for(dir.path(), &["api"]);
+    projects.defaults.agent_profiles.insert(
+        "rev".into(),
+        AgentProfile {
+            role: "refuter".into(),
+            skills: vec![],
+            model_profile: None,
+            context_budget_bytes: None,
+            priority: 0,
+            triggers: vec![],
+            outputs: vec![],
+            enabled: true,
+        },
+    );
+    projects.projects.get_mut("api").unwrap().review_profile = Some("rev".into());
+
+    let plan = parse_plan(
+        r#"
+spec: review provenance
+tasks:
+  - id: T0
+    project: api
+    kind: verify
+    agent: shell
+    command: "echo ok"
+"#,
+    );
+    let final_state = run_plan(plan, projects, ExecConfig::default())
+        .await
+        .expect("run_plan");
+
+    assert_eq!(
+        final_state.tasks["T0"].resolved_review_profile.as_deref(),
+        Some("rev"),
+        "the review profile that ran is recorded as provenance"
+    );
+
+    clear_workspace();
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn f114_review_fails_fast_on_unknown_review_profile() {
+    // Step 5 guard: a finished task whose `review_profile` names a profile the
+    // workspace never defines must fail (never silently skip the review). The
+    // task itself succeeds first; the review step then fails it.
+    let dir = make_workspace();
+    ensure_dirs(dir.path(), &["api"]);
+    let mut projects = projects_for(dir.path(), &["api"]);
+    projects.projects.get_mut("api").unwrap().review_profile = Some("ghost_reviewer".into());
+
+    let plan = parse_plan(
+        r#"
+spec: bad review profile
+tasks:
+  - id: T0
+    project: api
+    kind: verify
+    agent: shell
+    command: "echo ok"
+"#,
+    );
+    let final_state = run_plan(plan, projects, ExecConfig::default())
+        .await
+        .expect("run_plan");
+
+    let t0 = &final_state.tasks["T0"];
+    assert_eq!(t0.status, TaskStatus::Failed);
+    assert!(
+        t0.error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("ghost_reviewer"),
+        "failure must name the undefined review profile: {:?}",
+        t0.error
+    );
+
+    clear_workspace();
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn f114_explicit_review_by_wins_over_bad_project_review_profile() {
+    // Step-5 N2: a higher-priority explicit `review_by` must short-circuit
+    // before the project `review_profile`, so a bad (undefined) project
+    // `review_profile` can NOT fail the task as a config error.
+    let dir = make_workspace();
+    ensure_dirs(dir.path(), &["api"]);
+    let mut projects = projects_for(dir.path(), &["api"]);
+    projects.projects.get_mut("api").unwrap().review_profile = Some("ghost".into());
+
+    let plan = parse_plan(
+        r#"
+spec: review_by wins
+tasks:
+  - id: T0
+    project: api
+    kind: verify
+    agent: shell
+    command: "echo ok"
+    review_by: refuter
+"#,
+    );
+    let final_state = run_plan(plan, projects, ExecConfig::default())
+        .await
+        .expect("run_plan");
+
+    // The bad project review_profile is shadowed by the explicit review_by, so
+    // whatever the review outcome, the task must not fail as a `ghost` config
+    // error.
+    let err = final_state.tasks["T0"]
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        !err.contains("ghost"),
+        "explicit review_by must shadow the bad project review_profile: {err:?}"
+    );
 
     clear_workspace();
 }
@@ -1562,6 +1785,8 @@ async fn monorepo_project_subdirs_run_inside_mapped_worktrees() {
             cursor_model: None,
             model_profile: None,
             role: None,
+            agent_profile: None,
+            review_profile: None,
             copy_files: Vec::new(),
         },
     );
@@ -1695,6 +1920,8 @@ async fn monorepo_parallel_conflict_is_attributed_and_actionable() {
             cursor_model: None,
             model_profile: None,
             role: None,
+            agent_profile: None,
+            review_profile: None,
             copy_files: Vec::new(),
         },
     );
@@ -1985,6 +2212,8 @@ async fn integration_worktree_feeds_downstream_and_global_verification() {
                 cursor_model: None,
                 model_profile: None,
                 role: None,
+                agent_profile: None,
+                review_profile: None,
                 copy_files: Vec::new(),
             },
         );
@@ -2104,6 +2333,8 @@ async fn rerun_seeded_skipped_tasks_keep_outputs_and_integration_changes() {
                 cursor_model: None,
                 model_profile: None,
                 role: None,
+                agent_profile: None,
+                review_profile: None,
                 copy_files: Vec::new(),
             },
         );
@@ -2242,6 +2473,8 @@ async fn global_verification_preserves_workspace_paths_for_nested_repo() {
                 cursor_model: None,
                 model_profile: None,
                 role: None,
+                agent_profile: None,
+                review_profile: None,
                 copy_files: Vec::new(),
             },
         );

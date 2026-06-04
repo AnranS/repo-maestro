@@ -37,6 +37,15 @@ fn touches_contract(path: &str, contract_paths: &[String]) -> bool {
     })
 }
 
+/// Does any changed file touch one of the project's *declared* contract paths?
+/// The F-114 `contract_changed` post-task trigger fact. This is narrower than
+/// the full high-risk classifier: it reuses the same logical-contract path
+/// matching ([`touches_contract`]) but does NOT include the schema/IDL-file
+/// fallback that `classify_change_risk` applies when no contract is declared.
+pub fn any_touches_contract(files: &[String], contract_paths: &[String]) -> bool {
+    files.iter().any(|f| touches_contract(f, contract_paths))
+}
+
 /// A change to this file type ripples to downstream consumers — an RPC/data
 /// IDL, an API spec, or a DB migration — so it warrants human judgment even
 /// when the project declared no contract path. Deliberately excludes

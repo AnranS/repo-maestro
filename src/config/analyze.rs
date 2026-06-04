@@ -88,6 +88,7 @@ pub fn analyze(plan: &Plan, projects: &ProjectsConfig) -> AnalyzeReport {
     findings.extend(check_unknown_projects(plan, projects));
     findings.extend(check_shell_syntax(plan));
     findings.extend(check_contracts(plan, projects));
+    findings.extend(check_agent_profiles(plan, projects));
     findings.extend(check_size(plan));
 
     AnalyzeReport {
@@ -112,6 +113,39 @@ fn check_unknown_projects(plan: &Plan, projects: &ProjectsConfig) -> Vec<Finding
                     t.project
                 ),
             });
+        }
+    }
+    out
+}
+
+/// F-114: every task-level `agent_profile` / `review_profile` must name a
+/// profile that exists in `defaults.agent_profiles` and is enabled. This is the
+/// task-side complement to `ProjectsConfig::agent_profile_issues` (which covers
+/// the project-side refs) — it catches a hand-authored `PLAN.yaml` typo before
+/// dispatch instead of letting it silently fall through to default routing.
+fn check_agent_profiles(plan: &Plan, projects: &ProjectsConfig) -> Vec<Finding> {
+    let profiles = &projects.defaults.agent_profiles;
+    let mut out = vec![];
+    for t in &plan.tasks {
+        for (field, reference) in [
+            ("agent_profile", t.agent_profile.as_deref()),
+            ("review_profile", t.review_profile.as_deref()),
+        ] {
+            let Some(name) = reference.map(str::trim).filter(|s| !s.is_empty()) else {
+                continue;
+            };
+            let problem = match profiles.get(name) {
+                None => Some("is not defined in defaults.agent_profiles"),
+                Some(p) if !p.enabled => Some("refers to a disabled profile"),
+                Some(_) => None,
+            };
+            if let Some(problem) = problem {
+                out.push(Finding::Error {
+                    code: crate::schema::preview::codes::UNKNOWN_AGENT_PROFILE,
+                    task: Some(t.id.clone()),
+                    message: format!("{field} `{name}` {problem}"),
+                });
+            }
         }
     }
     out
@@ -970,5 +1004,53 @@ tasks:
         // ≤ 20 tasks: no warning either way.
         let small = plan("spec: s\ncreated_by: maestro-init-analyze\ntasks:\n  - { id: T0, project: p, kind: verify, command: \"true\" }\n");
         assert!(check_size(&small).is_empty());
+    }
+
+    #[test]
+    fn flags_unknown_or_disabled_task_agent_profile() {
+        let projects = projects(
+            "version: 1\ndefaults:\n  agent_profiles:\n    reviewer:\n      role: refuter\n    draft:\n      role: backend\n      enabled: false\nprojects:\n  api:\n    path: ./api\n",
+        );
+        let plan = plan(
+            "spec: s\ntasks:\n  - { id: T0, project: api, kind: agent, prompt: p, agent_profile: nope }\n  - { id: T1, project: api, kind: agent, prompt: p, review_profile: draft }\n  - { id: T2, project: api, kind: agent, prompt: p, review_profile: reviewer }\n",
+        );
+        let out = check_agent_profiles(&plan, &projects);
+        let codes: Vec<_> = out.iter().map(|f| f.code()).collect();
+        assert!(out.iter().all(|f| f.is_error()));
+        assert_eq!(
+            codes,
+            vec![
+                crate::schema::preview::codes::UNKNOWN_AGENT_PROFILE,
+                crate::schema::preview::codes::UNKNOWN_AGENT_PROFILE
+            ],
+            "T0 undefined + T1 disabled flagged; T2 (valid) not"
+        );
+        let msgs: String = out
+            .iter()
+            .map(|f| match f {
+                Finding::Error { task, message, .. } => {
+                    format!("{}:{message}\n", task.as_deref().unwrap_or(""))
+                }
+                _ => String::new(),
+            })
+            .collect();
+        assert!(msgs.contains("T0:agent_profile `nope` is not defined"));
+        assert!(msgs.contains("T1:review_profile `draft` refers to a disabled profile"));
+    }
+
+    #[test]
+    fn padded_valid_task_agent_profile_passes() {
+        // N1: a whitespace-padded but valid reference must validate clean (the
+        // same normalization the resolver/dispatch use).
+        let projects = projects(
+            "version: 1\ndefaults:\n  agent_profiles:\n    reviewer:\n      role: refuter\nprojects:\n  api:\n    path: ./api\n",
+        );
+        let plan = plan(
+            "spec: s\ntasks:\n  - { id: T0, project: api, kind: agent, prompt: p, agent_profile: \" reviewer \" }\n",
+        );
+        assert!(
+            check_agent_profiles(&plan, &projects).is_empty(),
+            "padded valid reference must pass validate"
+        );
     }
 }

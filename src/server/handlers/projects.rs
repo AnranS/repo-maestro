@@ -443,6 +443,8 @@ pub async fn projects_post(body: Json<ProjectsPost>) -> Response {
             cursor_model: None,
             model_profile: model_profile.filter(|s| !s.trim().is_empty()),
             role: role.filter(|s| !s.trim().is_empty()),
+            agent_profile: None,
+            review_profile: None,
             copy_files: Vec::new(),
         },
     );

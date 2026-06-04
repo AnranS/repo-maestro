@@ -276,6 +276,8 @@ fn analyzer_warns_on_missing_contract_edge() {
         cursor_model: None,
         model_profile: None,
         role: None,
+        agent_profile: None,
+        review_profile: None,
         copy_files: Vec::new(),
     };
     api.contracts.provides = Some("schemas/openapi.yaml".into());
@@ -326,6 +328,8 @@ fn analyzer_passes_when_consumer_depends_on_producer() {
         cursor_model: None,
         model_profile: None,
         role: None,
+        agent_profile: None,
+        review_profile: None,
         copy_files: Vec::new(),
     };
     api.contracts.provides = Some("schemas/openapi.yaml".into());

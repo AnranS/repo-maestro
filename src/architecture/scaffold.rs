@@ -160,6 +160,8 @@ pub fn scaffold(arch: &Architecture, opts: &ScaffoldOptions) -> Result<ScaffoldR
                     cursor_model: None,
                     model_profile: None,
                     role: default_role_for_type(m.r#type.as_deref()),
+                    agent_profile: None,
+                    review_profile: None,
                     copy_files: Vec::new(),
                 },
             );

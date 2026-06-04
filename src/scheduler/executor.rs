@@ -856,39 +856,131 @@ async fn handle_task_review(
     ready: &mut VecDeque<String>,
     running: &mut JoinSet<TaskJoin>,
 ) -> Result<LoopFlow> {
-    // Resolve which reviewer (if any) runs over this finished task. Explicit
-    // `review_by` wins; otherwise F-106 auto-attaches the builtin `refuter` to
-    // high-risk tasks when `refute_on_high_risk` is on. Risk is computed here
-    // (not read from the stored `risk_level`, which the later approval gate is
-    // what writes — N1-A).
-    let explicit = plan.task(task_id).and_then(|t| t.review_by.clone());
-    let reviewer_role = if let Some(role) = explicit {
-        role
-    } else if projects.defaults.refute_on_high_risk {
-        let project = plan
-            .task(task_id)
-            .map(|t| t.project.clone())
-            .unwrap_or_default();
-        let is_high = compute_and_store_risk(ctx, projects, task_id, &project).await;
-        match resolve_reviewer_role(None, true, is_high) {
-            Some(role) => {
-                tracing::debug!(
-                    "task {task_id} high-risk + refute_on_high_risk → attaching builtin refuter"
-                );
-                ctx.record_finding(
-                    FindingKind::Refute,
-                    Severity::High,
-                    "refuter",
-                    "high-risk change escalated to adversarial refuter review",
-                    Some(task_id),
-                );
-                role
-            }
-            None => return Ok(LoopFlow::Proceed),
+    // Resolve which reviewer (if any) runs over this finished task (F-114).
+    // Precedence: explicit `review_by` > task/project `review_profile` >
+    // post-task review-capable trigger profile > F-106 `refute_on_high_risk`
+    // → builtin refuter. Byte-compatible with the old `resolve_reviewer_role`
+    // when no profile participates.
+    // Normalize references ONCE up front (trim + treat blank as absent), so the
+    // fail-check, `needs_facts`, and `resolve_reviewer` all agree — a blank
+    // `review_by: "   "` / `review_profile: "   "` must not block the F-106 /
+    // trigger tiers (Step-5 N1, same class as the Step-4 whitespace fix).
+    let task_opt = plan.task(task_id);
+    let review_by = normalize_ref(task_opt.and_then(|t| t.review_by.as_deref()));
+    let task_rp = normalize_ref(task_opt.and_then(|t| t.review_profile.as_deref()));
+    let project_name = task_opt.map(|t| t.project.clone()).unwrap_or_default();
+    let project_rp = normalize_ref(
+        projects
+            .projects
+            .get(&project_name)
+            .and_then(|p| p.review_profile.as_deref()),
+    );
+    let profiles = &projects.defaults.agent_profiles;
+
+    // Fail-fast (dali's guard, mirroring the writer path) — but precedence-aware
+    // (N2): only the `review_profile` layer that would actually be *selected*
+    // gets fail-checked, so a lower-priority bad config can't override a
+    // higher-priority explicit choice. An explicit `review_by` short-circuits
+    // before any `review_profile`; task before project. `maestro validate` still
+    // reports every bad reference in projects.yaml — this is only the runtime
+    // resolver refusing to let a shadowed layer break the active selection.
+    if let Some((which, name)) = active_review_profile(review_by, task_rp, project_rp) {
+        let bad = match profiles.get(name) {
+            None => Some("is not defined in defaults.agent_profiles"),
+            Some(p) if !p.enabled => Some("is disabled"),
+            Some(_) => None,
+        };
+        if let Some(reason) = bad {
+            return fail_task_review_config(
+                ctx,
+                cfg,
+                task_id,
+                running,
+                had_failure,
+                format!("{which} review_profile '{name}' {reason}"),
+            )
+            .await;
         }
+    }
+
+    // Risk + post-task facts are only needed for the trigger / F-106 tiers, so
+    // compute them (a side-effecting risk classification) only when those tiers
+    // can be reached — preserving the old timing when no profile participates.
+    let needs_facts = reviewer_needs_facts(
+        review_by,
+        task_rp,
+        project_rp,
+        projects.defaults.refute_on_high_risk,
+        profiles,
+    );
+    let (facts, is_high) = if needs_facts {
+        let is_high = compute_and_store_risk(ctx, projects, task_id, &project_name).await;
+        (
+            build_reviewer_facts(ctx, projects, task_id, &project_name, is_high).await,
+            is_high,
+        )
     } else {
+        (crate::config::MatchFacts::default(), false)
+    };
+
+    let resolved = crate::config::resolve_reviewer(
+        profiles,
+        review_by,
+        task_rp,
+        project_rp,
+        &facts,
+        projects.defaults.refute_on_high_risk,
+        is_high,
+    );
+
+    // F-114 provenance: overwrite with the CURRENT decision every time (N1) —
+    // reviewer selection is a post-task decision, so a retry whose new facts no
+    // longer match a profile (or falls back to explicit `review_by` / F-106 /
+    // no reviewer) must clear a stale label, not keep the previous round's.
+    {
+        let mut s = ctx.lock().await;
+        if let Some(ts) = s.tasks.get_mut(task_id) {
+            ts.resolved_review_profile = next_review_profile_provenance(resolved.as_ref());
+        }
+    }
+
+    let Some(resolved) = resolved else {
         return Ok(LoopFlow::Proceed);
     };
+
+    // Provenance findings: keep the exact F-106 Refute marker for the fallback;
+    // a profile that declares a `finding_kind` output gets that marker.
+    match resolved.source {
+        crate::config::ReviewerSource::RefuteFallback => {
+            tracing::debug!(
+                "task {task_id} high-risk + refute_on_high_risk → attaching builtin refuter"
+            );
+            ctx.record_finding(
+                FindingKind::Refute,
+                Severity::High,
+                "refuter",
+                "high-risk change escalated to adversarial refuter review",
+                Some(task_id),
+            );
+        }
+        _ => {
+            if let Some(kind) = resolved.profile.as_deref().and_then(|name| {
+                profiles
+                    .get(name)
+                    .and_then(|p| p.outputs.iter().find_map(|o| o.finding_kind.as_deref()))
+                    .and_then(FindingKind::parse)
+            }) {
+                ctx.record_finding(
+                    kind,
+                    Severity::Info,
+                    resolved.profile.as_deref().unwrap_or("agent_profile"),
+                    "specialist review attached",
+                    Some(task_id),
+                );
+            }
+        }
+    }
+    let reviewer_role = resolved.role;
     let snap = {
         let s = ctx.lock().await;
         s.tasks.get(task_id).map(|ts| {
@@ -1038,24 +1130,77 @@ fn task_is_high_risk(files: &[String], contracts: &[String]) -> bool {
     crate::scheduler::risk::classify_change_risk(&with_status, contracts).level == "high"
 }
 
-/// Pure auto-attach decision (F-106): which reviewer role, if any, runs over a
-/// finished task. Explicit `review_by` always wins; otherwise, when
-/// `refute_on_high_risk` is on and the change is high-risk, the builtin
-/// `refuter` is attached. Pure so the ordering bug (reading a not-yet-written
-/// `risk_level`) can't sneak back in — `is_high_risk` must be computed from
-/// files, see `task_is_high_risk`.
-fn resolve_reviewer_role(
-    explicit_review_by: Option<&str>,
-    refute_on_high_risk: bool,
-    is_high_risk: bool,
-) -> Option<String> {
-    if let Some(r) = explicit_review_by {
-        return Some(r.to_string());
+// F-106's pure auto-attach decision is now subsumed by the F-114
+// `config::resolve_reviewer` (explicit `review_by` > review profiles >
+// post-task trigger > the `refute_on_high_risk` → builtin `refuter` fallback).
+// With an empty profile map it is byte-compatible with the former
+// `resolve_reviewer_role`; the F-106 tests below assert exactly that.
+
+/// F-114 writer resolution at dispatch. Fail-fast on a missing or disabled
+/// explicit `agent_profile` reference (task- or project-level) — never silently
+/// fall back to default routing (dali's Step-4 guard) — then resolve the writer
+/// specialist via the pure resolver. The profile only fills role/skills/
+/// model_profile gaps; it never overrides an explicit task field. Pre-dispatch
+/// facts only (post-task triggers can't pick a writer; the data doesn't exist
+/// yet). `issue_code` triggers are inert here in v1 — they need a prior F-111
+/// dry/validate pass that dispatch doesn't carry.
+fn resolve_writer_or_fail(
+    projects: &ProjectsConfig,
+    task: &PlanTask,
+) -> anyhow::Result<crate::config::ResolvedWriter> {
+    let profiles = &projects.defaults.agent_profiles;
+    let project = projects.projects.get(&task.project);
+    let project_agent_profile = project.and_then(|p| p.agent_profile.as_deref());
+
+    for (which, reference) in [
+        ("task", task.agent_profile.as_deref()),
+        ("project", project_agent_profile),
+    ] {
+        if let Some(name) = reference.map(str::trim).filter(|s| !s.is_empty()) {
+            match profiles.get(name) {
+                None => anyhow::bail!(
+                    "{which} agent_profile '{name}' is not defined in defaults.agent_profiles"
+                ),
+                Some(p) if !p.enabled => {
+                    anyhow::bail!("{which} agent_profile '{name}' is disabled")
+                }
+                Some(_) => {}
+            }
+        }
     }
-    if refute_on_high_risk && is_high_risk {
-        return Some("refuter".to_string());
-    }
-    None
+
+    let task_kind = match task.kind {
+        TaskKind::Agent => "agent",
+        TaskKind::Verify => "verify",
+    };
+    let facts = crate::config::MatchFacts {
+        task_kind: Some(task_kind.to_string()),
+        project_type: project.and_then(|p| p.r#type.clone()),
+        project_stacks: project.map(|p| p.stack.clone()).unwrap_or_default(),
+        project_has_contract: project.is_some_and(|p| !p.contracts.is_empty()),
+        ..Default::default()
+    };
+    let inputs = crate::config::WriterInputs {
+        task_role: task.role.as_deref().filter(|v| !v.trim().is_empty()),
+        task_skills: &task.skills,
+        task_model_profile: task
+            .model_profile
+            .as_deref()
+            .filter(|v| !v.trim().is_empty()),
+        project_role: project
+            .and_then(|p| p.role.as_deref())
+            .filter(|v| !v.trim().is_empty()),
+        project_model_profile: project
+            .and_then(|p| p.model_profile.as_deref())
+            .filter(|v| !v.trim().is_empty()),
+    };
+    Ok(crate::config::resolve_writer(
+        profiles,
+        &inputs,
+        task.agent_profile.as_deref(),
+        project_agent_profile,
+        &facts,
+    ))
 }
 
 /// Classify a finished task's change risk from its net `artifacts.files_changed`
@@ -1093,6 +1238,148 @@ async fn compute_and_store_risk(
         }
     }
     is_high
+}
+
+/// Normalize an optional reference: trim surrounding whitespace and treat a
+/// blank string as absent. The single point so a blank `review_by` /
+/// `review_profile` reads as `None` everywhere downstream.
+fn normalize_ref(reference: Option<&str>) -> Option<&str> {
+    reference.map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Which `review_profile` layer (if any) actually participates in reviewer
+/// selection, precedence-aware (N2): an explicit `review_by` short-circuits
+/// before any `review_profile`; task before project. Only this layer is
+/// fail-checked at runtime, so a shadowed lower-priority bad reference can't
+/// break the higher-priority selection. Inputs MUST be normalized. Pure.
+fn active_review_profile<'a>(
+    review_by: Option<&str>,
+    task_rp: Option<&'a str>,
+    project_rp: Option<&'a str>,
+) -> Option<(&'static str, &'a str)> {
+    if review_by.is_some() {
+        return None;
+    }
+    if let Some(name) = task_rp {
+        return Some(("task", name));
+    }
+    project_rp.map(|name| ("project", name))
+}
+
+/// The review-profile provenance to record for the current decision: the
+/// matched profile's name, or `None` when no reviewer / an explicit `review_by`
+/// role / the F-106 refute fallback ran (none of which carry a profile). Always
+/// assigned (never conditionally) so a retry can't leave a stale label (N1).
+fn next_review_profile_provenance(
+    resolved: Option<&crate::config::ResolvedReviewer>,
+) -> Option<String> {
+    resolved.and_then(|r| r.profile.clone())
+}
+
+/// Does the reviewer path need post-task facts (risk classification etc.)?
+/// Only when no explicit reviewer / review profile applies AND a fact-dependent
+/// tier can fire (the F-106 `refute_on_high_risk` fallback or a post-task
+/// review-capable trigger profile). Inputs MUST be normalized
+/// ([`normalize_ref`]) so a blank reference doesn't suppress the facts. Pure.
+fn reviewer_needs_facts(
+    review_by: Option<&str>,
+    task_rp: Option<&str>,
+    project_rp: Option<&str>,
+    refute_on_high_risk: bool,
+    profiles: &std::collections::BTreeMap<String, crate::config::AgentProfile>,
+) -> bool {
+    review_by.is_none()
+        && task_rp.is_none()
+        && project_rp.is_none()
+        && (refute_on_high_risk || has_post_task_review_profile(profiles))
+}
+
+/// Is there any enabled, review-capable profile with a post-task trigger? Lets
+/// the reviewer path skip risk/fact computation entirely when no such profile
+/// exists (so the F-106-only case keeps its exact behavior and timing).
+fn has_post_task_review_profile(
+    profiles: &std::collections::BTreeMap<String, crate::config::AgentProfile>,
+) -> bool {
+    profiles.values().any(|p| {
+        p.enabled
+            && p.is_review_capable()
+            && p.triggers
+                .iter()
+                .any(|t| t.stage() == crate::config::TriggerStage::PostTask)
+    })
+}
+
+/// Post-task `MatchFacts` for reviewer trigger evaluation: the task's changed
+/// paths, whether they touch a contract, and the run's finding kinds recorded
+/// for this task. Read-only — the risk side effect already happened in
+/// `compute_and_store_risk`.
+async fn build_reviewer_facts(
+    ctx: &RunCtx,
+    projects: &ProjectsConfig,
+    task_id: &str,
+    project: &str,
+    is_high: bool,
+) -> crate::config::MatchFacts {
+    let files = {
+        let s = ctx.lock().await;
+        s.tasks
+            .get(task_id)
+            .map(|ts| ts.artifacts.files_changed.clone())
+            .unwrap_or_default()
+    };
+    let contracts = contract_paths_for(projects, project);
+    let contract_changed = crate::scheduler::risk::any_touches_contract(&files, &contracts);
+    let finding_kinds = findings::read_findings(&ctx.run_dir)
+        .map(|fs| {
+            fs.into_iter()
+                .filter(|f| f.task_id.as_deref() == Some(task_id))
+                .map(|f| f.kind.as_str().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    crate::config::MatchFacts {
+        high_risk: is_high,
+        contract_changed,
+        changed_paths: files,
+        finding_kinds,
+        ..Default::default()
+    }
+}
+
+/// Fail a finished task because its configured `review_profile` can't run (a
+/// missing or disabled reference). Mirrors the retry-exhausted failure path so
+/// the run reacts consistently (abort siblings unless `--continue-on-error`).
+async fn fail_task_review_config(
+    ctx: &RunCtx,
+    cfg: &ExecConfig,
+    task_id: &str,
+    running: &mut JoinSet<TaskJoin>,
+    had_failure: &mut bool,
+    message: String,
+) -> Result<LoopFlow> {
+    {
+        let mut s = ctx.lock().await;
+        if let Some(ts) = s.tasks.get_mut(task_id) {
+            ts.status = TaskStatus::Failed;
+            ts.error = Some(message.clone());
+        }
+    }
+    ctx.write_state().await?;
+    ctx.record(
+        RunEventKind::TaskFailed,
+        Some(task_id),
+        Some(message),
+        json!({ "review": "config_error" }),
+    );
+    ctx.tick();
+    *had_failure = true;
+    if !cfg.continue_on_error {
+        running.abort_all();
+        while running.join_next().await.is_some() {}
+        Ok(LoopFlow::Break)
+    } else {
+        Ok(LoopFlow::Continue)
+    }
 }
 
 async fn handle_post_task_approval(
@@ -1787,10 +2074,33 @@ async fn dispatch_one_task(
         TaskKind::Agent => task.prompt.clone(),
         TaskKind::Verify => task.command.clone().unwrap_or_default(),
     };
-    let resolved_role_name = crate::roles::resolve_for_task(
-        task.role.as_deref(),
-        projects.resolved_role(&task.project).as_deref(),
-    );
+    // F-114: resolve a writer specialist (fills role/skills/model_profile gaps,
+    // never overwrites explicit task fields). Fail-fast on a bad explicit
+    // profile reference — never silently fall back.
+    let writer = match resolve_writer_or_fail(projects, &task) {
+        Ok(w) => w,
+        Err(e) => {
+            return fail_task_inline(
+                state,
+                &run_dir,
+                &run_id,
+                channels_config.as_ref(),
+                envelope_dry_run,
+                state_tx,
+                cfg,
+                &log_path,
+                &task_id,
+                "agent profile resolution",
+                format!("{e:#}"),
+                ready,
+                running,
+                had_failure,
+            )
+            .await;
+        }
+    };
+    // `writer.role` already encodes task.role > profile.role > project.role.
+    let resolved_role_name = writer.role.clone();
     let resolved_role = resolved_role_name
         .as_deref()
         .and_then(crate::roles::try_load);
@@ -1812,7 +2122,12 @@ async fn dispatch_one_task(
     }
     let injected_skills = if matches!(task.kind, TaskKind::Agent) {
         let skill_result = if mode.skills.is_empty() {
-            crate::skills::resolve_for_task(&prompt_for_trigger, Some(&task.project), &task.skills)
+            // `writer.skills` = explicit task.skills if any, else the profile's.
+            crate::skills::resolve_for_task(
+                &prompt_for_trigger,
+                Some(&task.project),
+                &writer.skills,
+            )
         } else {
             crate::skills::for_mode(&mode)
         };
@@ -1867,12 +2182,15 @@ async fn dispatch_one_task(
 
     // Resolve model: explicit model -> run override -> model profile
     // -> project/default model. None means the adapter uses its
-    // account default.
+    // account default. F-114: `writer.model_profile` (task > profile > project)
+    // feeds the model_profile slot, inserting a matched profile's model_profile
+    // between the task and project tiers without disturbing the rest of the
+    // chain (project.model_profile is resolved identically downstream).
     let model = projects.resolved_task_model(
         &task.project,
         task.model.as_deref(),
         cfg.model_override.as_deref(),
-        task.model_profile.as_deref(),
+        writer.model_profile.as_deref(),
         resolved_role_name.as_deref(),
     );
     // Routing model override applies only when the task didn't pin a model.
@@ -1908,6 +2226,8 @@ async fn dispatch_one_task(
                 .as_ref()
                 .map(|r| r.name.clone())
                 .or(resolved_role_name.clone());
+            // F-114 provenance: which specialist profile supplied the writer.
+            ts.resolved_agent_profile = writer.profile.clone();
         }
     }
 
@@ -3669,8 +3989,23 @@ mod tests {
 - packages/api/src/users.ts: getUser:8, listUsers:20";
 
     mod refute_pass {
-        //! F-106 adversarial refute pass — the pure decision logic.
-        use super::super::{resolve_reviewer_role, task_is_high_risk};
+        //! F-106 adversarial refute pass — now driven through the F-114
+        //! `config::resolve_reviewer` with an empty profile map, which must stay
+        //! byte-compatible with the former `resolve_reviewer_role`.
+        use super::super::task_is_high_risk;
+        use crate::config::{resolve_reviewer, MatchFacts};
+        use std::collections::BTreeMap;
+
+        /// The F-106-only decision: no profiles, just `review_by` + the
+        /// high-risk refute fallback. Returns the reviewer role, if any.
+        fn refuter_for(explicit: Option<&str>, refute: bool, high: bool) -> Option<String> {
+            let facts = MatchFacts {
+                high_risk: high,
+                ..Default::default()
+            };
+            resolve_reviewer(&BTreeMap::new(), explicit, None, None, &facts, refute, high)
+                .map(|r| r.role)
+        }
 
         #[test]
         fn refuter_role_loads_from_builtin_bundle() {
@@ -3684,29 +4019,23 @@ mod tests {
         #[test]
         fn auto_attach_picks_refuter_only_when_high_risk_and_toggle_on() {
             // toggle on + high-risk + no explicit reviewer → refuter
-            assert_eq!(
-                resolve_reviewer_role(None, true, true),
-                Some("refuter".to_string())
-            );
+            assert_eq!(refuter_for(None, true, true), Some("refuter".to_string()));
             // toggle on but NOT high-risk → no reviewer
-            assert_eq!(resolve_reviewer_role(None, true, false), None);
+            assert_eq!(refuter_for(None, true, false), None);
         }
 
         #[test]
         fn explicit_review_by_wins_over_auto_refute() {
             // an explicit reviewer always wins, even on a high-risk task
             // with the toggle on — we don't override the user's choice.
-            assert_eq!(
-                resolve_reviewer_role(Some("qa"), true, true),
-                Some("qa".to_string())
-            );
+            assert_eq!(refuter_for(Some("qa"), true, true), Some("qa".to_string()));
         }
 
         #[test]
         fn auto_attach_noop_when_toggle_off() {
             // toggle off → never auto-attach, regardless of risk
-            assert_eq!(resolve_reviewer_role(None, false, true), None);
-            assert_eq!(resolve_reviewer_role(None, false, false), None);
+            assert_eq!(refuter_for(None, false, true), None);
+            assert_eq!(refuter_for(None, false, false), None);
         }
 
         #[test]
@@ -3726,13 +4055,13 @@ mod tests {
             // and that flows into an attached refuter
             let is_high = task_is_high_risk(&["api/openapi.yaml".to_string()], &contracts);
             assert_eq!(
-                resolve_reviewer_role(None, true, is_high),
+                refuter_for(None, true, is_high),
                 Some("refuter".to_string())
             );
             // an empty change is never high-risk → no refuter
             assert!(!task_is_high_risk(&[], &contracts));
             assert_eq!(
-                resolve_reviewer_role(None, true, task_is_high_risk(&[], &contracts)),
+                refuter_for(None, true, task_is_high_risk(&[], &contracts)),
                 None
             );
         }
@@ -4073,6 +4402,274 @@ projects:
             let t = task_from_yaml("id: T_x\nproject: demo\nkind: agent\n");
             let (name, _, _) = resolve_adapter_for_task(&t, &projects);
             assert_eq!(name, "codex");
+        }
+    }
+
+    mod f114_writer_dispatch {
+        //! F-114 Step 4: dispatch-time writer resolution — fail-fast on a bad
+        //! explicit profile reference, and the pre-dispatch facts wired from the
+        //! project. The precedence/merge itself is covered by the pure resolver.
+        use super::super::resolve_writer_or_fail;
+        use crate::config::{PlanTask, ProjectsConfig};
+
+        const PROJECTS: &str = r#"
+version: 1
+defaults:
+  agent: cursor
+  model_profiles:
+    deep: { preferred: gpt-5.2 }
+  agent_profiles:
+    writer:
+      role: backend_rust
+      skills: [_global/s]
+      model_profile: deep
+    typed:
+      role: frontend
+      triggers:
+        - on: project_type
+          types: [backend]
+    draft:
+      role: backend_python
+      enabled: false
+projects:
+  api:
+    path: ./api
+    type: backend
+  bound:
+    path: ./bound
+    agent_profile: writer
+"#;
+
+        fn projects() -> ProjectsConfig {
+            serde_yaml::from_str(PROJECTS).unwrap()
+        }
+        fn task(yaml: &str) -> PlanTask {
+            serde_yaml::from_str(yaml).unwrap()
+        }
+
+        #[test]
+        fn fails_fast_on_missing_or_disabled_profile() {
+            let p = projects();
+            let missing =
+                task("id: T0\nproject: api\nkind: agent\nprompt: p\nagent_profile: ghost\n");
+            let err = resolve_writer_or_fail(&p, &missing)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("ghost") && err.contains("not defined"),
+                "{err}"
+            );
+
+            let disabled =
+                task("id: T0\nproject: api\nkind: agent\nprompt: p\nagent_profile: draft\n");
+            let err = resolve_writer_or_fail(&p, &disabled)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("draft") && err.contains("disabled"), "{err}");
+        }
+
+        #[test]
+        fn project_bound_profile_fills_role_skills_model() {
+            let p = projects();
+            let t = task("id: T0\nproject: bound\nkind: agent\nprompt: p\n");
+            let w = resolve_writer_or_fail(&p, &t).unwrap();
+            assert_eq!(w.profile.as_deref(), Some("writer"));
+            assert_eq!(w.role.as_deref(), Some("backend_rust"));
+            assert_eq!(w.skills, vec!["_global/s".to_string()]);
+            assert_eq!(w.model_profile.as_deref(), Some("deep"));
+        }
+
+        #[test]
+        fn pre_dispatch_trigger_uses_project_facts() {
+            // `typed` has a project_type:[backend] trigger; project `api` is
+            // type backend and pins no profile → trigger selects `typed`.
+            let p = projects();
+            let t = task("id: T0\nproject: api\nkind: agent\nprompt: p\n");
+            let w = resolve_writer_or_fail(&p, &t).unwrap();
+            assert_eq!(w.profile.as_deref(), Some("typed"));
+            assert_eq!(w.role.as_deref(), Some("frontend"));
+        }
+
+        #[test]
+        fn explicit_task_role_is_not_overwritten_by_profile() {
+            let p = projects();
+            let t = task("id: T0\nproject: bound\nkind: agent\nprompt: p\nrole: architect\n");
+            let w = resolve_writer_or_fail(&p, &t).unwrap();
+            assert_eq!(w.role.as_deref(), Some("architect"), "task role wins");
+            // profile still contributes its skills/model (gaps)
+            assert_eq!(w.skills, vec!["_global/s".to_string()]);
+            assert_eq!(w.profile.as_deref(), Some("writer"));
+        }
+
+        #[test]
+        fn padded_explicit_profile_reference_still_selects() {
+            // N1: a whitespace-padded `agent_profile` passes validate + the
+            // dispatch fail-check; it must also actually select the profile
+            // (not silently fall through to trigger/default).
+            let p = projects();
+            let t = task(
+                "id: T0\nproject: bound\nkind: agent\nprompt: p\nagent_profile: \"  writer  \"\n",
+            );
+            let w = resolve_writer_or_fail(&p, &t).unwrap();
+            assert_eq!(w.profile.as_deref(), Some("writer"));
+            assert_eq!(w.role.as_deref(), Some("backend_rust"));
+        }
+
+        #[test]
+        fn no_profile_no_trigger_is_inert() {
+            // project `api` with a verify task: project_type trigger still fires
+            // for `typed` (pre-dispatch facts don't depend on kind) — so use a
+            // project without a matching trigger to prove the inert path.
+            let mut p = projects();
+            p.projects.get_mut("api").unwrap().r#type = Some("tool".into());
+            let t = task("id: T0\nproject: api\nkind: agent\nprompt: p\n");
+            let w = resolve_writer_or_fail(&p, &t).unwrap();
+            assert_eq!(w.profile, None);
+            assert_eq!(w.role, None);
+        }
+    }
+
+    mod f114_reviewer_facts {
+        //! Step-5 N1: blank reviewer references must normalize to `None` so they
+        //! don't suppress the F-106 / post-task-trigger fact computation.
+        use super::super::{active_review_profile, normalize_ref, reviewer_needs_facts};
+        use crate::config::{AgentProfile, ProfileOutput, ProfileTrigger};
+        use std::collections::BTreeMap;
+
+        #[test]
+        fn active_review_profile_is_precedence_aware() {
+            // explicit review_by short-circuits — no review_profile layer is
+            // checked, so a bad task/project review_profile can't fail the task.
+            assert_eq!(
+                active_review_profile(Some("qa"), Some("t"), Some("p")),
+                None
+            );
+            // task review_profile wins over project — only task is checked.
+            assert_eq!(
+                active_review_profile(None, Some("t"), Some("p")),
+                Some(("task", "t"))
+            );
+            // project review_profile only when there's no task one.
+            assert_eq!(
+                active_review_profile(None, None, Some("p")),
+                Some(("project", "p"))
+            );
+            // nothing participates.
+            assert_eq!(active_review_profile(None, None, None), None);
+        }
+
+        fn post_task_reviewer() -> BTreeMap<String, AgentProfile> {
+            let mut m = BTreeMap::new();
+            m.insert(
+                "rev".into(),
+                AgentProfile {
+                    role: "refuter".into(),
+                    skills: vec![],
+                    model_profile: None,
+                    context_budget_bytes: None,
+                    priority: 0,
+                    triggers: vec![ProfileTrigger::HighRisk],
+                    outputs: vec![ProfileOutput {
+                        finding_kind: None,
+                        review_verdict: true,
+                        issue_codes: vec![],
+                    }],
+                    enabled: true,
+                },
+            );
+            m
+        }
+
+        #[test]
+        fn normalize_ref_trims_and_blanks_to_none() {
+            assert_eq!(normalize_ref(Some("  rp  ")), Some("rp"));
+            assert_eq!(normalize_ref(Some("   ")), None);
+            assert_eq!(normalize_ref(Some("")), None);
+            assert_eq!(normalize_ref(None), None);
+        }
+
+        #[test]
+        fn blank_review_by_does_not_block_f106_facts() {
+            let empty = BTreeMap::new();
+            // refute on + a blank review_by → still needs facts (F-106 can fire).
+            assert!(reviewer_needs_facts(
+                normalize_ref(Some("   ")),
+                None,
+                None,
+                true,
+                &empty
+            ));
+            // refute off + no profile → no facts needed.
+            assert!(!reviewer_needs_facts(
+                normalize_ref(Some("   ")),
+                None,
+                None,
+                false,
+                &empty
+            ));
+        }
+
+        #[test]
+        fn blank_review_profile_does_not_block_trigger_facts() {
+            let profiles = post_task_reviewer();
+            // refute OFF, but a post-task review-capable profile exists, and the
+            // review_profile is blank → facts are still needed for the trigger.
+            assert!(reviewer_needs_facts(
+                None,
+                normalize_ref(Some("  ")),
+                None,
+                false,
+                &profiles
+            ));
+        }
+
+        #[test]
+        fn a_real_explicit_reviewer_skips_facts() {
+            let profiles = post_task_reviewer();
+            assert!(!reviewer_needs_facts(
+                Some("qa"),
+                None,
+                None,
+                true,
+                &profiles
+            ));
+            assert!(!reviewer_needs_facts(
+                None,
+                Some("rev"),
+                None,
+                true,
+                &profiles
+            ));
+        }
+
+        #[test]
+        fn review_provenance_is_the_current_decision_and_clears_without_a_profile() {
+            use super::super::next_review_profile_provenance;
+            use crate::config::{ResolvedReviewer, ReviewerSource};
+            // a profile-backed reviewer → its name
+            let with = ResolvedReviewer {
+                role: "refuter".into(),
+                source: ReviewerSource::ProjectProfile,
+                profile: Some("rev".into()),
+            };
+            assert_eq!(
+                next_review_profile_provenance(Some(&with)).as_deref(),
+                Some("rev")
+            );
+            // explicit review_by / F-106 fallback carry NO profile → clears (N1)
+            for src in [
+                ReviewerSource::ExplicitReviewBy,
+                ReviewerSource::RefuteFallback,
+            ] {
+                let r = ResolvedReviewer {
+                    role: "qa".into(),
+                    source: src,
+                    profile: None,
+                };
+                assert_eq!(next_review_profile_provenance(Some(&r)), None);
+            }
+            // no reviewer at all → None
+            assert_eq!(next_review_profile_provenance(None), None);
         }
     }
 }

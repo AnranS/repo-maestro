@@ -3,6 +3,7 @@
 //! still live in `cli/mod.rs` so clap's derive macros keep working from
 //! one place; only the *implementations* moved here.
 
+pub mod agent_profile;
 pub mod bench;
 pub mod builtins;
 pub mod channels;

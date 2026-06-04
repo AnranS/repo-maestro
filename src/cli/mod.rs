@@ -153,6 +153,14 @@ pub enum Cmd {
     #[command(subcommand)]
     Skill(SkillCmd),
 
+    /// Manage F-114 specialist agent profiles (`defaults.agent_profiles`).
+    ///
+    /// A profile composes an existing role + skills + model_profile with
+    /// triggers and an output contract. `new` writes a disabled draft; `ls` /
+    /// `show` inspect; `eval` dry-runs trigger matching against a fixture.
+    #[command(subcommand, name = "agent-profile")]
+    AgentProfile(AgentProfileCmd),
+
     /// Cancel a running maestro run (the scheduler picks up the marker on its next tick).
     CancelRun(CancelRunArgs),
 
@@ -940,6 +948,50 @@ pub enum SkillCmd {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum AgentProfileCmd {
+    /// Create a disabled draft profile under `defaults.agent_profiles`.
+    New {
+        /// Profile name (a `defaults.agent_profiles` key).
+        name: String,
+        /// Starting shape: blank | contract-reviewer | release-privacy-reviewer
+        /// | recovery-doctor.
+        #[arg(long)]
+        template: Option<String>,
+        /// Override the template's role.
+        #[arg(long)]
+        role: Option<String>,
+    },
+    /// List defined profiles (name, role, enabled, trigger count).
+    #[command(alias = "list")]
+    Ls,
+    /// Print one profile as YAML.
+    Show { name: String },
+    /// Dry-run trigger matching + handoff shaping against a `MatchFacts` fixture
+    /// (read-only; does not run the agent).
+    Eval {
+        name: String,
+        /// YAML fixture of trigger facts (task_kind, project_type,
+        /// changed_paths, high_risk, …).
+        #[arg(long)]
+        fixture: PathBuf,
+    },
+    /// Enable a draft profile after validation. Requires at least one trigger or
+    /// an explicit project binding, and that its role/skills/model_profile
+    /// resolve — otherwise the profile could never be used.
+    Promote { name: String },
+    /// Distill a disabled draft profile from a prior run's shape (deterministic;
+    /// NOT model fine-tuning). Reads the run's task roles/skills, risk levels,
+    /// task kinds, and finding kinds to draft triggers + an output contract.
+    /// Writes only neutral config — no transcripts, paths, or project names.
+    Train {
+        name: String,
+        /// Run id (or `current`).
+        #[arg(long = "from-run")]
+        from_run: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum MemoryCmd {
     /// List facts grouped by topic.
     #[command(alias = "ls")]
@@ -1250,6 +1302,7 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
         Cmd::Channels(a) => commands::channels::run(a).await,
         Cmd::Bench(a) => commands::bench::run(a).await,
         Cmd::Skill(a) => commands::skills::run(a),
+        Cmd::AgentProfile(a) => commands::agent_profile::run(a),
         Cmd::CancelRun(a) => cmd_cancel_run(a),
         Cmd::Open(a) => cmd_open(a).await,
         Cmd::History(a) => cmd_history(a).await,

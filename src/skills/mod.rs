@@ -492,6 +492,42 @@ fn load_visible(project: Option<&str>, name: &str) -> Result<Skill> {
     load(&SkillScope::Global, name)
 }
 
+/// Read-only existence of a skill at an exact scope. Computes the path directly
+/// (never `ensure_dir`), so a validation caller doesn't create `.maestro/skills`.
+/// A scope that fails path-component validation can't exist → `false`.
+fn skill_file_exists(scope: &SkillScope, name: &str) -> bool {
+    if let SkillScope::Project(p) = scope {
+        if paths::validate_path_component("skill scope", p).is_err() {
+            return false;
+        }
+    }
+    let Ok(root) = paths::maestro_dir() else {
+        return false;
+    };
+    root.join(SKILLS_DIR)
+        .join(scope.dir_name())
+        .join(format!("{}.md", sanitize(name)))
+        .exists()
+}
+
+/// Does a skill reference resolve to an on-disk skill? Mirrors `load_visible`'s
+/// scope resolution (explicit `scope/name`, else project scope, else global) so
+/// validation and dispatch agree on what "exists" — but read-only (no
+/// `ensure_dir`). Pass the project context when the profile is bound to one
+/// (so an unscoped skill resolves project-first then global); pass `None` for
+/// an unbound profile (explicit scopes + global only).
+pub fn reference_exists(project: Option<&str>, name: &str) -> bool {
+    if let Some((scope_name, skill_name)) = name.split_once('/') {
+        return skill_file_exists(&SkillScope::from_dir(scope_name), skill_name);
+    }
+    if let Some(project) = project {
+        if skill_file_exists(&SkillScope::Project(project.to_string()), name) {
+            return true;
+        }
+    }
+    skill_file_exists(&SkillScope::Global, name)
+}
+
 fn push_unique(out: &mut Vec<Skill>, seen: &mut HashSet<String>, skill: Skill) {
     let key = format!("{}/{}", skill.scope.dir_name(), skill.name);
     if seen.insert(key) {

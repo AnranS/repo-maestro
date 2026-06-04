@@ -273,6 +273,8 @@ projects:
             cursor_model: None,
             model_profile: None,
             role: None,
+            agent_profile: None,
+            review_profile: None,
             copy_files: copy_files
                 .iter()
                 .map(|entry| (*entry).to_string())

@@ -897,6 +897,8 @@ pub(crate) fn cmd_add(a: AddArgs) -> Result<()> {
         cursor_model: None,
         model_profile: None,
         role: a.role,
+        agent_profile: None,
+        review_profile: None,
         copy_files: Vec::new(),
     };
     cfg.projects.insert(name.clone(), project);
@@ -1040,6 +1042,61 @@ pub(crate) fn cmd_validate() -> Result<()> {
         let abs = paths::expand(&p.path)?;
         if !abs.exists() {
             errors.push(format!("project '{name}': path does not exist: {:?}", abs));
+        }
+    }
+    // F-114: agent-profile structure + cross-config references (pure).
+    errors.extend(cfg.agent_profile_issues());
+    // F-114: role + skill *existence* needs the on-disk role/skill registries,
+    // so it lives here rather than in the pure `issues()` helpers (which stay
+    // filesystem-free). Read-only: `roles::exists` / `skills::reference_exists`
+    // never create `.maestro/roles` or `.maestro/skills`. Blank role / skills
+    // are already reported by `issues()`; skip them to avoid duplicates.
+    //
+    // Which projects pin each profile (via `agent_profile` / `review_profile`).
+    // An unscoped skill resolves project-first then global, so it can only be
+    // validated against a concrete project context — for an unreferenced profile
+    // (one that would only ever auto-match by trigger) we defer the unscoped
+    // skill check to the resolver, which will have that context.
+    let mut pinned_by: std::collections::BTreeMap<&str, Vec<&str>> =
+        std::collections::BTreeMap::new();
+    for (pname, proj) in &cfg.projects {
+        for reference in [&proj.agent_profile, &proj.review_profile]
+            .into_iter()
+            .flatten()
+        {
+            pinned_by.entry(reference).or_default().push(pname);
+        }
+    }
+    for (name, profile) in &cfg.defaults.agent_profiles {
+        if !profile.role.trim().is_empty() && !crate::roles::exists(&profile.role) {
+            errors.push(format!(
+                "agent_profile '{name}': role '{}' is not defined",
+                profile.role
+            ));
+        }
+        for skill_ref in &profile.skills {
+            if skill_ref.trim().is_empty() {
+                continue;
+            }
+            if skill_ref.contains('/') {
+                // explicit scope (`_global/foo` / `<project>/foo`) — exact check.
+                if !crate::skills::reference_exists(None, skill_ref) {
+                    errors.push(format!(
+                        "agent_profile '{name}': skill '{skill_ref}' is not defined"
+                    ));
+                }
+            } else if let Some(projects) = pinned_by.get(name.as_str()) {
+                // unscoped: must resolve (project scope, then global) for every
+                // project that pins this profile.
+                for proj in projects {
+                    if !crate::skills::reference_exists(Some(proj), skill_ref) {
+                        errors.push(format!(
+                            "agent_profile '{name}': skill '{skill_ref}' is not defined for project '{proj}'"
+                        ));
+                    }
+                }
+            }
+            // else: unscoped skill on an unreferenced profile → defer to resolver.
         }
     }
     if errors.is_empty() {
@@ -1768,6 +1825,8 @@ mod render_dashboard_tests {
             usage: None,
             steps: None,
             role: None,
+            resolved_agent_profile: None,
+            resolved_review_profile: None,
             workspace_path: Some("/tmp/demo".into()),
             worktree_path: None,
         }
@@ -1970,6 +2029,8 @@ mod runstate_serde_tests {
             usage: None,
             steps: Some(12),
             role: Some("backend".into()),
+            resolved_agent_profile: None,
+            resolved_review_profile: None,
             workspace_path: Some("/tmp/demo".into()),
             worktree_path: Some("/tmp/demo-wt".into()),
         };

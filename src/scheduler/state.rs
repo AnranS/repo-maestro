@@ -160,6 +160,19 @@ pub struct TaskState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
 
+    /// F-114: name of the specialist `agent_profile` that supplied this task's
+    /// writer role/skills/model_profile, if one matched (explicit task/project
+    /// reference or a pre-dispatch trigger). `None` when no profile applied.
+    /// Provenance only — the lowered role/skills/model are recorded as usual.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_agent_profile: Option<String>,
+
+    /// F-114: name of the specialist `agent_profile` that supplied this task's
+    /// reviewer (post-task review profile or trigger match). `None` when the
+    /// review came from an explicit `review_by` role or the F-106 fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_review_profile: Option<String>,
+
     /// Actual directory used for execution. This may differ from the project
     /// path when worktree isolation is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -305,6 +318,8 @@ impl RunState {
                     usage: None,
                     steps: None,
                     role: None,
+                    resolved_agent_profile: None,
+                    resolved_review_profile: None,
                     workspace_path: None,
                     worktree_path: None,
                 },

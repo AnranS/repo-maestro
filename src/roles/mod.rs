@@ -212,6 +212,23 @@ pub fn try_load(name: &str) -> Option<Role> {
     }
 }
 
+/// Read-only existence check mirroring [`load`]'s lookup order (workspace role
+/// file → builtin → cursor-plugin persona) but **without** creating
+/// `.maestro/roles` (so callers like `maestro validate` stay non-mutating).
+pub fn exists(name: &str) -> bool {
+    let sanitized = sanitize(name);
+    // workspace role file — compute the path directly, never ensure_dir.
+    if let Ok(dir) = paths::maestro_dir() {
+        if dir.join(ROLES_DIR).join(role_filename(&sanitized)).exists() {
+            return true;
+        }
+    }
+    if RoleAsset::get(&format!("{sanitized}.md")).is_some() {
+        return true;
+    }
+    find_cursor_plugin_persona(&sanitized).is_some()
+}
+
 /// Enumerate every role visible to this workspace: builtins first, then
 /// user-defined (which shadow builtins of the same name).
 pub fn list_all() -> Result<Vec<RoleSummary>> {

@@ -404,6 +404,30 @@ export function TaskRow({ task }: { task: TaskState }) {
               )}
             </div>
           )}
+          {(task.resolved_agent_profile || task.resolved_review_profile) && (
+            <div className="flex flex-wrap items-center gap-2 text-[11px]">
+              {task.resolved_agent_profile && (
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20"
+                  title="F-114 specialist agent profile that supplied the writer"
+                >
+                  <User size={10} />
+                  specialist:{" "}
+                  <span className="font-mono">{task.resolved_agent_profile}</span>
+                </span>
+              )}
+              {task.resolved_review_profile && (
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20"
+                  title="F-114 specialist agent profile that supplied the reviewer"
+                >
+                  <Eye size={10} />
+                  reviewer:{" "}
+                  <span className="font-mono">{task.resolved_review_profile}</span>
+                </span>
+              )}
+            </div>
+          )}
           <ChangesReceipt task={task} />
           <TrajectoryReceipt task={task} />
           {(task.workspace_path || task.worktree_path) && (

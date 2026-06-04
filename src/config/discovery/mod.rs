@@ -423,6 +423,8 @@ pub fn project_from_discovery(project: &DiscoveredProject, agent: Option<&str>) 
         cursor_model: None,
         model_profile: None,
         role: None,
+        agent_profile: None,
+        review_profile: None,
         copy_files: Vec::new(),
     }
 }

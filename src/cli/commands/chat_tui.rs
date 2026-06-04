@@ -1524,6 +1524,13 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &AppState) {
     if !task.skills_triggered.is_empty() {
         lines.push(kv_line("skills", &task.skills_triggered.join(", ")));
     }
+    // F-114: which specialist profile (if any) supplied the writer / reviewer.
+    if let Some(profile) = &task.resolved_agent_profile {
+        lines.push(kv_line("specialist", profile));
+    }
+    if let Some(profile) = &task.resolved_review_profile {
+        lines.push(kv_line("reviewer", profile));
+    }
     if !task.depends_on.is_empty() {
         lines.push(kv_line("depends_on", &task.depends_on.join(", ")));
     }

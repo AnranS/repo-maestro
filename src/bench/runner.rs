@@ -203,6 +203,8 @@ fn synthesize_fixture_plan(fixture: &Fixture) -> Plan {
                 model_profile: None,
                 role: None,
                 review_by: None,
+                agent_profile: None,
+                review_profile: None,
             }
         })
         .collect();
@@ -249,6 +251,8 @@ fn projects_for_plan(plan: &Plan) -> ProjectsConfig {
                 cursor_model: None,
                 model_profile: None,
                 role: None,
+                agent_profile: None,
+                review_profile: None,
                 copy_files: Vec::new(),
             },
         );

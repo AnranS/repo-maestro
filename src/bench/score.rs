@@ -254,6 +254,8 @@ mod tests {
                         model_profile: None,
                         role: None,
                         review_by: None,
+                        agent_profile: None,
+                        review_profile: None,
                     }
                 })
                 .collect(),

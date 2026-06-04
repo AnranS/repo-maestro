@@ -18,6 +18,17 @@ defaults:                         # 没有覆盖时套用到每个项目
     balanced:
       preferred: gpt-5.2
       fallback: [composer-2, composer-2-fast]
+  agent_profiles:                 # F-114：命名的专职 agent（role + skills + model_profile + 触发器）
+    contract-reviewer:
+      role: refuter               # 一个已有的 role 名
+      skills: [_global/contract-first]
+      model_profile: balanced     # 一个已有的 defaults.model_profiles 条目
+      triggers:                   # 任一命中即匹配（闭合的 v1 触发集）
+        - on: contract_changed
+        - on: path_changed
+          patterns: ["idl/**", "schemas/**"]
+      outputs:
+        - review_verdict: true    # 只读运行，以 VERDICT: pass|fail 结尾
   branch_prefix: feat/            # maestro 建分支时用的前缀
   max_parallel: 4                 # DAG 并发上限
   max_total_tasks: 1000           # 单次 run 的任务总数上限，超过即拒绝（0 = 不限制）
@@ -35,6 +46,7 @@ projects:
     agent: cursor                 # 覆盖默认 agent；选 "shell" 跑裸命令
     agent_model: gpt-5.2          # 项目级模型覆盖
     model_profile: balanced       # fallback 链覆盖；优先级高于 agent_model
+    review_profile: contract-reviewer  # F-114：本项目默认的审查专职 agent（按名引用）
     memory_scope:                 # 哪些 L1 事实主题会被自动注入
       - api
       - schema
@@ -64,6 +76,7 @@ projects:
 | `tagger_model` | `""` | 聊天自动打标签用的模型。建议选便宜的。空时回退到 `agent_model`。 |
 | `model_profile` | 未设置 | 未设置任务/运行/项目 profile 时使用的默认 profile。 |
 | `model_profiles` | `{}` | 命名 fallback 链。每个 profile 有 `preferred` 和有序 `fallback`。 |
+| `agent_profiles` | `{}` | **F-114** 命名的专职 agent。每个把已有的 `role` + `skills` + `model_profile`（外加可选 `context_budget_bytes`、`priority`）和 `triggers`（闭合触发集）、`outputs` 契约组合起来。项目/任务按名引用（`agent_profile` / `review_profile`），或由触发器自动匹配。`maestro validate` 会校验每个 profile 的结构（非空 `role`、触发器字段合法、`finding_kind` 在已知集合内），其 `role` 和 `skills` 在磁盘上**存在**，`model_profile` 已定义，以及指向它的引用。触发器：pre-dispatch 的 `task_kind` / `project_type` / `project_stack` / `project_has_contract` / `issue_code`；post-task 的 `contract_changed` / `high_risk` / `path_changed` / `finding_kind`。输出：`finding_kind`（F-110）、`review_verdict`（走 `review_by` 路径）、`issue_codes`（F-111）。解析已生效：dispatch 时 writer profile 补齐 role/skills/model_profile 的空位（绝不覆盖显式 task 字段），任务结束后 review-capable profile 会排在 `refute_on_high_risk` 兜底之前运行。管理 CLI 与 UI 标签在后续 F-114 步骤落地；详见 `docs/experience/F-114-SPECIALIST-AGENT-PROFILES-DESIGN.md`。 |
 | `branch_prefix` | `feat/` | 任何创建分支的 agent 都会用这个前缀。 |
 | `max_parallel` | `4` | DAG 内同时跑的最大任务数。 |
 | `max_total_tasks` | `1000` | 单次 run 可执行的任务总数硬上限（在 `project_each` 展开后统计）。超过上限的失控 plan 会被**拒绝而非截断**，并给出可操作的错误。`0` 表示不限制。不作用于 `rerun`/`resume`（它们恢复的是已 admit 的历史 plan）。 |
@@ -81,6 +94,8 @@ projects:
 | `agent_model` | 否 | 项目级模型覆盖，在任务/运行/profile 之后生效。 |
 | `cursor_model` | 否 | `agent_model` 的旧别名；保留给已有工作区。 |
 | `model_profile` | 否 | 项目级 fallback 链覆盖，优先级高于 `agent_model`。 |
+| `agent_profile` | 否 | **F-114**：用作本项目默认**写入**专职 agent 的 `defaults.agent_profiles` 条目名。补齐任务的 `role`/`skills`/`model_profile` 缺口，但绝不覆盖任务显式的 `role`。必须引用一个 enabled 的 profile（`maestro validate` 强制）。 |
+| `review_profile` | 否 | **F-114**：用作默认**审查**专职 agent 的 `defaults.agent_profiles` 条目名。任务没有显式 `review_by` 时启用，排在 `refute_on_high_risk` 兜底之前。必须引用一个 enabled 的 profile。 |
 | `memory_scope` | 否 | `.maestro/memory/l1_facts/` 下要自动注入到此项目任务 prompt 的子目录名列表。 |
 | `contracts.provides` | 否 | 此项目对外产出的一个契约文件路径，其他项目可以 `consumes` 它声明依赖。 |
 | `contracts.consumes` | 否 | 此项目依赖的一个契约文件路径。 |
@@ -112,6 +127,19 @@ maestro validate
 ```
 
 `maestro validate` 会检查路径是否存在、契约是否引用真实文件（如果有契约）、有没有重名冲突。
+
+### 专职 profile（F-114）
+
+```bash
+maestro agent-profile new contract-reviewer --template contract-reviewer  # 禁用态草稿
+maestro agent-profile ls
+maestro agent-profile show contract-reviewer
+maestro agent-profile eval contract-reviewer --fixture facts.yaml          # 干跑触发器匹配
+maestro agent-profile train recovery-doctor --from-run <run-id>            # 从一次 run 蒸馏草稿
+maestro agent-profile promote contract-reviewer                            # 校验通过后启用
+```
+
+`new` 在 `defaults.agent_profiles` 下写一个**禁用**草稿（编辑后再 promote）。`eval` 读一个 `MatchFacts` fixture（`task_kind`、`project_type`、`changed_paths`、`high_risk`、`contract_changed`、`finding_kinds` 等），报告哪些触发器命中、profile 会交接什么——但不运行 agent。`train` 从一次 run 的形态（role、触发过的 skill、风险等级、finding kind）确定性蒸馏出一个禁用草稿——**不是**模型 fine-tune，且只写中性 config（无 transcript/路径/真实项目名）。它只保留 `_global/<skill>`（及无 scope 的）skill，**丢弃 project-scoped（`<project>/<skill>`）引用**——那会泄漏项目名且无法泛化——只报告一个丢弃计数；需要的话手动加回。`promote` 在校验通过且有 ≥1 trigger 或 project 绑定时启用草稿。模板：`blank`、`contract-reviewer`、`release-privacy-reviewer`、`recovery-doctor`。
 
 ## 在面板里添加
 

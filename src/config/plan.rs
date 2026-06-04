@@ -158,6 +158,20 @@ pub struct PlanTask {
     /// the diagnosis. `None` = no review step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_by: Option<String>,
+
+    /// F-114: writer specialist for this task, by name into
+    /// `defaults.agent_profiles`. Fills role/skills/model_profile gaps left by
+    /// the explicit task fields above; an explicit `role` still wins. Sits
+    /// above the project's `agent_profile` in precedence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_profile: Option<String>,
+
+    /// F-114: review specialist for this task, by name into
+    /// `defaults.agent_profiles`. Consulted when `review_by` is unset; an
+    /// explicit `review_by` still wins. Sits above the project's
+    /// `review_profile` and the F-106 high-risk refuter fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
