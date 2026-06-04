@@ -18,7 +18,11 @@ pub mod worktree_policy;
 
 pub use dag::TaskGraph;
 pub use dry_run::{dry_run, dry_run_in_workspace, DryRunSummary};
-pub use events::{append_event, read_events, RunEvent, RunEventKind};
+pub use events::{
+    append_event, append_event_draft, append_event_draft_with_subscribe, project_finding_event,
+    read_events, RunEvent, RunEventDisplay, RunEventDraft, RunEventKind, RunEventStatus,
+    RunEventStream,
+};
 pub use evidence::{write_run_evidence, RunEvidence};
 pub use executor::{generate_run_id, run_plan, ExecConfig};
 pub use liveness::{classify_run, force_cancel_if_abandoned, RunLiveness};

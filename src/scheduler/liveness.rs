@@ -71,8 +71,12 @@ pub fn force_cancel_if_abandoned(run_dir: &Path) -> Result<bool> {
         "run abandoned (owner process not alive); force-cancelled",
         now.to_rfc3339(),
     );
-    if let Err(e) = super::findings::append_finding(run_dir, finding) {
-        tracing::warn!("could not append abandoned-run finding: {e:#}");
+    // Durable first, then a best-effort finding.recorded projection (F-115), same
+    // order/semantics as RunCtx::record_finding even though this path is off the
+    // RunCtx (the doctor finding producer from the F-110 table).
+    match super::findings::append_finding(run_dir, finding) {
+        Ok(written) => super::events::project_finding_event(run_dir, &written, None, false),
+        Err(e) => tracing::warn!("could not append abandoned-run finding: {e:#}"),
     }
     Ok(true)
 }

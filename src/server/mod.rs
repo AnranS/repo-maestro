@@ -54,6 +54,10 @@ pub fn build_app(st: ServerState) -> Router {
             "/api/runs/:id/tasks/:task/detail",
             get(runs::task_detail_handler),
         )
+        .route(
+            "/api/runs/:id/events/stream",
+            get(runs::run_events_stream_handler),
+        )
         .route("/api/runs/:id/replay", get(runs::run_replay_handler))
         .route("/api/runs/:id/pr-body", get(runs::run_pr_body_handler))
         .route(

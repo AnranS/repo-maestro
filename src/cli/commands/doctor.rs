@@ -756,7 +756,7 @@ fn schema_version_checks(run_dir: &Path, verbose: bool) -> Vec<DoctorCheck> {
         &mut checks,
         &run_dir.join(paths::RUN_EVENTS_FILE),
         "run events",
-        &[crate::schema::RUN_EVENT_V1],
+        &[crate::schema::RUN_EVENT_V1, crate::schema::RUN_EVENT_V2],
         verbose,
     );
     check_json_schema_version(
@@ -1198,7 +1198,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(
             temp.path().join(crate::paths::RUN_EVENTS_FILE),
-            r#"{"schema_version":"maestro.run_event.v2","seq":1,"kind":"run.started"}"#,
+            r#"{"schema_version":"maestro.run_event.v3","seq":1,"kind":"run.started"}"#,
         )
         .unwrap();
         let trajectories = temp.path().join(crate::paths::TRAJECTORIES_DIR);
@@ -1217,7 +1217,7 @@ mod tests {
         let checks = schema_version_checks(temp.path(), false);
         assert!(checks.iter().any(|check| {
             check.status == CheckStatus::Warn
-                && check.message.contains("maestro.run_event.v2")
+                && check.message.contains("maestro.run_event.v3")
                 && check
                     .fix
                     .as_deref()
@@ -1238,6 +1238,23 @@ mod tests {
                 && check.name == "channel_envelope.v1"
                 && check.message.contains("maestro.channel_envelope.v2")
         }));
+    }
+
+    #[test]
+    fn schema_version_checks_accept_current_run_event_v2() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join(crate::paths::RUN_EVENTS_FILE),
+            r#"{"schema_version":"maestro.run_event.v2","seq":1,"kind":"run.started"}"#,
+        )
+        .unwrap();
+        let checks = schema_version_checks(temp.path(), false);
+        assert!(
+            !checks.iter().any(|check| {
+                check.status == CheckStatus::Warn && check.message.contains("maestro.run_event.v2")
+            }),
+            "run_event.v2 is the current version and must not warn"
+        );
     }
 
     #[test]

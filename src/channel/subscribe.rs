@@ -240,7 +240,10 @@ mod tests {
             timestamp: Utc.with_ymd_and_hms(2026, 5, 24, 8, 0, 0).unwrap(),
             kind,
             task_id: None,
+            status: None,
+            severity: None,
             message: None,
+            display: None,
             payload: Value::Null,
             refs: BTreeMap::new(),
         }

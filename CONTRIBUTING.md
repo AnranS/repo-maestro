@@ -108,6 +108,13 @@ MAESTRO_PRIVATE_WORDLIST=~/.maestro-private-wordlist ./scripts/secret-scan.sh
 The wordlist path is read at runtime; it's never persisted in the repo
 and its contents never echoed.
 
+Wordlist matching is **not** implicitly case-insensitive. Prefix a rule with
+`ci:` for case-insensitive matching (catches Titlecase / PascalCase variants of a
+brand word), or `cs:` / no prefix for case-sensitive (the default — so a short
+token like `top` doesn't collide with a camelCase identifier like `offsetTop`).
+A rule that needs case folding must opt in with `ci:`. `scripts/secret-scan-selftest.sh`
+exercises all three modes.
+
 ## Release notes
 
 The project keeps two complementary surfaces — both are mandatory for a

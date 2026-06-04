@@ -4,8 +4,8 @@
 
 use anyhow::Result;
 use axum::{
-    extract::{Path, Query},
-    http::{header, StatusCode},
+    extract::{Path, Query, State},
+    http::{header, HeaderMap, StatusCode},
     response::{sse::Event, IntoResponse, Json, Response, Sse},
 };
 use futures::stream::Stream;
@@ -15,6 +15,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::paths;
+use crate::scheduler::{read_events, RunEvent, RunEventStream};
+use crate::server::ServerState;
 
 pub async fn state_handler() -> Response {
     match read_current_state() {
@@ -216,6 +218,129 @@ pub async fn task_detail_handler(Path((run, task)): Path<(String, String)>) -> R
     match crate::schema::monitor::TaskDetail::from_state_and_findings(&state, &task, &findings) {
         Some(detail) => Json(detail).into_response(),
         None => (StatusCode::NOT_FOUND, "task not found").into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct EventsStreamQuery {
+    since_seq: Option<String>,
+}
+
+/// F-115 Step 3: per-run typed event stream. SSE of `RunEvent` v2 JSON, one
+/// `run_event` per event with `id = seq`. Resumable via `?since_seq=N` or a
+/// `Last-Event-ID` header (query wins); only events with `seq > cursor` are sent,
+/// in seq order. On entry: bad run id → 400, unknown run → 404, corrupt ledger →
+/// 500 (never silently empty). After the catch-up, it subscribes to the existing
+/// broadcast tick and re-reads on each change. The legacy `/api/events` state
+/// tick is untouched.
+pub async fn run_events_stream_handler(
+    Path(id): Path<String>,
+    Query(q): Query<EventsStreamQuery>,
+    headers: HeaderMap,
+    State(st): State<ServerState>,
+) -> Response {
+    let cursor = match resolve_stream_cursor(q.since_seq.as_deref(), header_last_event_id(&headers))
+    {
+        Ok(c) => c,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+    };
+    let run_dir = match run_dir_from_id(&id) {
+        Ok(Some(dir)) => dir,
+        Ok(None) => return (StatusCode::NOT_FOUND, "run not found").into_response(),
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+    };
+    // Subscribe BEFORE the initial read so no broadcast tick can slip through the
+    // gap between read and subscribe (N2): any event after this point is either
+    // already in the initial read or its tick is queued on `rx`, and the
+    // cursor-based dedup makes the resulting re-read harmless.
+    let rx = st.tx.subscribe();
+    // Initial read: a corrupt ledger is a 500, never a silently-empty stream.
+    let initial = match read_events(&run_dir) {
+        Ok(events) => events,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    };
+    let stream = run_event_sse_stream(run_dir, initial, cursor, rx);
+    Sse::new(stream)
+        .keep_alive(
+            axum::response::sse::KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("ping"),
+        )
+        .into_response()
+}
+
+/// Resolve the stream cursor: query `since_seq` wins over a `Last-Event-ID`
+/// header; absent → 0 (replay from the start). A present-but-non-numeric value
+/// is a `400`.
+fn resolve_stream_cursor(query: Option<&str>, header: Option<&str>) -> Result<u64, String> {
+    match query.or(header) {
+        None => Ok(0),
+        Some(raw) => raw
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| format!("cursor must be a non-negative integer (got {raw:?})")),
+    }
+}
+
+fn header_last_event_id(headers: &HeaderMap) -> Option<&str> {
+    headers.get("last-event-id").and_then(|v| v.to_str().ok())
+}
+
+/// Catch-up frames for the events with `seq > cursor`, in seq order. Each is a
+/// `(seq, RunEvent-json)` pair the handler turns into an SSE `run_event`. Reuses
+/// the F-115 Step-1 projector for the filter/sort so the stream and a fresh
+/// projection never disagree.
+fn event_stream_frames(events: &[RunEvent], cursor: u64) -> Vec<(u64, String)> {
+    RunEventStream::from_events(events, Some(cursor))
+        .events
+        .into_iter()
+        .filter_map(|ev| serde_json::to_string(&ev).ok().map(|json| (ev.seq, json)))
+        .collect()
+}
+
+fn run_event_frame(seq: u64, json: String) -> Event {
+    Event::default()
+        .event("run_event")
+        .id(seq.to_string())
+        .data(json)
+}
+
+/// The SSE body: emit the catch-up frames, then on each broadcast tick re-read
+/// the ledger and emit anything new (`seq > cursor`). A ledger that becomes
+/// unreadable mid-stream emits a neutral `error` event and ends — it never
+/// silently continues as an empty stream.
+fn run_event_sse_stream(
+    run_dir: PathBuf,
+    initial: Vec<RunEvent>,
+    start_cursor: u64,
+    mut rx: tokio::sync::broadcast::Receiver<()>,
+) -> impl Stream<Item = std::result::Result<Event, Infallible>> {
+    use tokio::sync::broadcast::error::RecvError;
+    async_stream::stream! {
+        let mut cursor = start_cursor;
+        for (seq, json) in event_stream_frames(&initial, cursor) {
+            cursor = cursor.max(seq);
+            yield Ok(run_event_frame(seq, json));
+        }
+        // A missed tick (Lagged) is handled like a normal tick: re-read from the
+        // durable, cursor-based ledger, so nothing is lost. The loop ends when the
+        // broadcast sender is dropped (Err(Closed) fails the while-let pattern).
+        while let Ok(()) | Err(RecvError::Lagged(_)) = rx.recv().await {
+            match read_events(&run_dir) {
+                Ok(events) => {
+                    for (seq, json) in event_stream_frames(&events, cursor) {
+                        cursor = cursor.max(seq);
+                        yield Ok(run_event_frame(seq, json));
+                    }
+                }
+                Err(_) => {
+                    yield Ok(Event::default()
+                        .event("error")
+                        .data("event ledger became unreadable"));
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -888,5 +1013,335 @@ mod monitor_tests {
         let detail = task_detail_handler(Path(("r-mon".into(), "T0".into()))).await;
         assert_eq!(detail.status(), StatusCode::INTERNAL_SERVER_ERROR);
         unsafe { std::env::remove_var("MAESTRO_WORKSPACE_ROOT") };
+    }
+
+    /// F-115 Step 4 dogfood: the v2 event stream and the F-112 monitor must agree
+    /// on the same run's lifecycle/status vocabulary, and `finding.recorded` must
+    /// expose only a small payload + run-relative ref (no finding body).
+    #[tokio::test]
+    #[serial]
+    async fn f115_events_agree_with_f112_monitor_and_finding_projection_is_minimal() {
+        use crate::scheduler::findings::{append_finding, Finding, FindingKind, Severity};
+        use crate::scheduler::{
+            append_event, project_finding_event, read_events, RunEventKind, RunEventStatus,
+        };
+        let tmp = workspace();
+        let run = tmp.path().join(".maestro/runs/r-mon");
+
+        // F-115 lifecycle events for the same (done) run; status auto-fills.
+        for (kind, task) in [
+            (RunEventKind::RunCreated, None),
+            (RunEventKind::TaskSucceeded, Some("T0")),
+            (RunEventKind::TaskSucceeded, Some("T1")),
+            (RunEventKind::RunCompleted, None),
+        ] {
+            append_event(&run, "r-mon", kind, task, None, serde_json::json!({})).unwrap();
+        }
+
+        // F-112 monitor for the same run.
+        let mon = body(run_monitor_handler(Path("r-mon".into())).await).await;
+        assert_eq!(mon["status"], "done");
+        assert_eq!(mon["progress"]["done"], 2);
+
+        // The two surfaces agree: run.completed carries status=done == monitor.status,
+        // and the count of done task events matches monitor.progress.done.
+        let events = read_events(&run).unwrap();
+        assert!(events.iter().any(
+            |e| e.kind == RunEventKind::RunCompleted && e.status == Some(RunEventStatus::Done)
+        ));
+        let task_done = events
+            .iter()
+            .filter(|e| {
+                e.kind == RunEventKind::TaskSucceeded && e.status == Some(RunEventStatus::Done)
+            })
+            .count();
+        assert_eq!(task_done as u64, mon["progress"]["done"].as_u64().unwrap());
+
+        // finding.recorded carries only severity + small {kind,id,seq} + a
+        // run-relative findings.ndjson ref — never the summary/body.
+        let finding = Finding::new(
+            "r-mon",
+            FindingKind::Risk,
+            Severity::High,
+            "risk-gate",
+            "DOGFOODSECRET summary that must not leak",
+            "2026-06-04T00:00:00Z",
+        )
+        .task("T0");
+        let written = append_finding(&run, finding).unwrap();
+        project_finding_event(&run, &written, None, false);
+        let proj = read_events(&run)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.kind == RunEventKind::FindingRecorded)
+            .expect("finding.recorded projected");
+        assert_eq!(proj.severity, Some(Severity::High));
+        assert_eq!(
+            proj.refs.get("findings").and_then(|r| r.path.as_deref()),
+            Some("findings.ndjson")
+        );
+        assert!(!proj.payload.to_string().contains("DOGFOODSECRET"));
+        assert!(proj
+            .message
+            .as_deref()
+            .map_or(true, |m| !m.contains("DOGFOODSECRET")));
+
+        unsafe { std::env::remove_var("MAESTRO_WORKSPACE_ROOT") };
+    }
+}
+
+#[cfg(test)]
+mod events_stream_tests {
+    //! F-115 Step 3 — the per-run typed event stream endpoint. Direct handler
+    //! calls against a throwaway workspace; the SSE body is read via
+    //! `into_data_stream()` with a short timeout window.
+    use super::{
+        event_stream_frames, read_current_state, resolve_stream_cursor, run_events_stream_handler,
+        EventsStreamQuery,
+    };
+    use crate::scheduler::{append_event, RunEventKind};
+    use crate::server::ServerState;
+    use axum::extract::{Path, Query, State};
+    use axum::http::{HeaderMap, StatusCode};
+    use futures::StreamExt;
+    use serial_test::serial;
+    use std::path::PathBuf;
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    fn state() -> ServerState {
+        let (tx, _rx) = tokio::sync::broadcast::channel(64);
+        ServerState { tx }
+    }
+
+    /// Workspace with a `run-evt` run holding `n` events (seq 1..=n).
+    fn workspace_with_events(n: u64) -> (TempDir, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let run = tmp.path().join(".maestro/runs/run-evt");
+        std::fs::create_dir_all(&run).unwrap();
+        for i in 1..=n {
+            append_event(
+                &run,
+                "run-evt",
+                RunEventKind::TaskStarted,
+                Some("t1"),
+                None,
+                serde_json::json!({ "i": i }),
+            )
+            .unwrap();
+        }
+        unsafe { std::env::set_var("MAESTRO_WORKSPACE_ROOT", tmp.path()) };
+        (tmp, run)
+    }
+
+    fn cleanup() {
+        unsafe { std::env::remove_var("MAESTRO_WORKSPACE_ROOT") };
+    }
+
+    /// Read SSE bytes until a `window_ms` gap with no new data.
+    async fn drain(stream: &mut axum::body::BodyDataStream, window_ms: u64) -> String {
+        let mut buf = Vec::new();
+        while let Ok(Some(Ok(bytes))) =
+            tokio::time::timeout(Duration::from_millis(window_ms), stream.next()).await
+        {
+            buf.extend_from_slice(&bytes);
+        }
+        String::from_utf8_lossy(&buf).to_string()
+    }
+
+    fn q(since: Option<&str>) -> Query<EventsStreamQuery> {
+        Query(EventsStreamQuery {
+            since_seq: since.map(|s| s.to_string()),
+        })
+    }
+
+    #[test]
+    fn resolve_cursor_query_wins_over_header_and_rejects_non_numeric() {
+        assert_eq!(resolve_stream_cursor(None, None).unwrap(), 0);
+        assert_eq!(resolve_stream_cursor(Some("5"), None).unwrap(), 5);
+        assert_eq!(resolve_stream_cursor(None, Some("3")).unwrap(), 3);
+        // query wins even when a (here, bad) header is present
+        assert_eq!(resolve_stream_cursor(Some("7"), Some("oops")).unwrap(), 7);
+        assert!(resolve_stream_cursor(Some("abc"), None).is_err());
+        assert!(resolve_stream_cursor(None, Some("nope")).is_err());
+    }
+
+    #[test]
+    fn event_stream_frames_filters_after_cursor_in_order() {
+        // Pure projector test — must NOT touch MAESTRO_WORKSPACE_ROOT, or it races
+        // the serial async handler tests (N1). Use a bare temp run dir, no env.
+        let tmp = TempDir::new().unwrap();
+        let run = tmp.path().join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        for i in 1..=3u64 {
+            append_event(
+                &run,
+                "run-evt",
+                RunEventKind::TaskStarted,
+                Some("t1"),
+                None,
+                serde_json::json!({ "i": i }),
+            )
+            .unwrap();
+        }
+        let events = crate::scheduler::read_events(&run).unwrap();
+        let frames = event_stream_frames(&events, 1);
+        assert_eq!(
+            frames.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert!(frames[0].1.contains("\"seq\":2"));
+        assert!(!frames.iter().any(|(_, j)| j.contains("\"seq\":1")));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn stream_catch_up_emits_run_event_frames_after_cursor() {
+        let (_tmp, _run) = workspace_with_events(3);
+        let resp = run_events_stream_handler(
+            Path("run-evt".into()),
+            q(Some("1")),
+            HeaderMap::new(),
+            State(state()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let mut stream = resp.into_body().into_data_stream();
+        let body = drain(&mut stream, 250).await;
+        cleanup();
+        // two run_event frames for seq 2 and 3, id == seq, none for seq 1
+        assert_eq!(body.matches("event: run_event").count(), 2);
+        assert!(body.contains("id: 2"));
+        assert!(body.contains("id: 3"));
+        assert!(body.contains("\"seq\":2"));
+        assert!(!body.contains("\"seq\":1"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn stream_live_tick_delivers_new_event() {
+        let (_tmp, run) = workspace_with_events(2);
+        let st = state();
+        let resp = run_events_stream_handler(
+            Path("run-evt".into()),
+            q(None),
+            HeaderMap::new(),
+            State(st.clone()),
+        )
+        .await;
+        let mut stream = resp.into_body().into_data_stream();
+        let catch_up = drain(&mut stream, 250).await;
+        assert!(catch_up.contains("id: 2"));
+        // append a new event + fire the broadcast tick the watcher would emit
+        append_event(
+            &run,
+            "run-evt",
+            RunEventKind::TaskSucceeded,
+            Some("t1"),
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
+        st.tx.send(()).unwrap();
+        let live = drain(&mut stream, 1000).await;
+        cleanup();
+        assert!(live.contains("id: 3"), "live frame: {live:?}");
+        assert!(live.contains("event: run_event"));
+        assert!(live.contains("\"seq\":3"));
+        // cursor advanced past the catch-up: the tick re-read must NOT re-emit the
+        // already-delivered seq 1/2 (N2 cursor-based dedup).
+        assert!(!live.contains("id: 1"), "no duplicate of seq 1: {live:?}");
+        assert!(!live.contains("id: 2"), "no duplicate of seq 2: {live:?}");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn stream_mid_stream_corruption_emits_error_and_ends() {
+        let (_tmp, run) = workspace_with_events(1);
+        let st = state();
+        let resp = run_events_stream_handler(
+            Path("run-evt".into()),
+            q(None),
+            HeaderMap::new(),
+            State(st.clone()),
+        )
+        .await;
+        let mut stream = resp.into_body().into_data_stream();
+        let _catch_up = drain(&mut stream, 250).await;
+        // ledger becomes unreadable mid-stream
+        std::fs::write(run.join("events.ndjson"), "{not json\n").unwrap();
+        st.tx.send(()).unwrap();
+        let after = drain(&mut stream, 1000).await;
+        cleanup();
+        assert!(
+            after.contains("event: error"),
+            "must surface an error, not a silent empty stream: {after:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn stream_bad_cursor_is_400() {
+        let (_tmp, _run) = workspace_with_events(1);
+        let resp = run_events_stream_handler(
+            Path("run-evt".into()),
+            q(Some("not-a-number")),
+            HeaderMap::new(),
+            State(state()),
+        )
+        .await;
+        cleanup();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn stream_unknown_run_is_404_and_bad_id_is_400() {
+        let (_tmp, _run) = workspace_with_events(1);
+        let unknown = run_events_stream_handler(
+            Path("no-such-run".into()),
+            q(None),
+            HeaderMap::new(),
+            State(state()),
+        )
+        .await;
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        for bad in ["../escape", "bad/name", ".."] {
+            let resp = run_events_stream_handler(
+                Path(bad.into()),
+                q(None),
+                HeaderMap::new(),
+                State(state()),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "bad id {bad}");
+        }
+        cleanup();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn stream_corrupt_ledger_initial_read_is_500() {
+        let (_tmp, run) = workspace_with_events(1);
+        std::fs::write(run.join("events.ndjson"), "{not json\n").unwrap();
+        let resp = run_events_stream_handler(
+            Path("run-evt".into()),
+            q(None),
+            HeaderMap::new(),
+            State(state()),
+        )
+        .await;
+        cleanup();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn events_state_tick_source_unchanged() {
+        // minimal regression on /api/events: it emits read_current_state() on each
+        // tick; with no current run that is Ok(None) (the handler emits "null").
+        let _tmp = workspace_with_events(1);
+        assert!(matches!(read_current_state(), Ok(None)));
+        cleanup();
     }
 }

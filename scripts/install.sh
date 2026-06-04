@@ -7,7 +7,7 @@
 # Configuration (environment variables):
 #   MAESTRO_INSTALL_BASE  Base URL for release assets.
 #                         Default: https://github.com/$MAESTRO_REPO/releases/latest/download
-#   MAESTRO_REPO          owner/name of the release repo (default: AnranS/maestro)
+#   MAESTRO_REPO          owner/name of the release repo (default: AnranS/repo-maestro)
 #   MAESTRO_VERSION       Tag to install, e.g. v0.1.0 (default: latest)
 #   MAESTRO_BIN_DIR       Install directory (default: $HOME/.local/bin)
 #

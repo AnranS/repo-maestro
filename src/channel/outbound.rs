@@ -25,15 +25,19 @@ pub fn format_event(
     entry: &ChannelEntry,
     options: FormatOptions,
 ) -> Option<OutboundReply> {
-    let event_kind = event.kind.as_str();
+    // Match against the canonical v2 kind AND any legacy collapsed alias, so a
+    // config still subscribing to a pre-F-115 wire kind keeps receiving the
+    // de-collapsed events (N1). The reply itself still reports the canonical kind.
+    let subscription_keys = event.kind.subscription_keys();
     if !entry
         .reply_to_run_events
         .iter()
-        .any(|allowed| allowed == event_kind)
+        .any(|allowed| subscription_keys.iter().any(|key| key == allowed))
     {
         return None;
     }
 
+    let event_kind = event.kind.as_str();
     let title = render_title(event_kind, &event.run_id, options.dry_run);
     let body = render_body(event, entry);
     let attachments = event.refs.values().cloned().collect();
@@ -146,6 +150,84 @@ mod tests {
         .expect("event should format");
 
         assert_eq!(reply.event_kind, "run.started");
+    }
+
+    #[test]
+    fn legacy_collapsed_subscription_still_matches_decollapsed_events() {
+        // A pre-F-115 config subscribing to the old collapsed wire kind keeps
+        // receiving the de-collapsed events; the reply reports the canonical kind.
+        let cases = [
+            (
+                RunEventKind::TaskApprovalGranted,
+                "task.completed",
+                "task.approval_granted",
+            ),
+            (
+                RunEventKind::VerifyCompleted,
+                "task.completed",
+                "verify.completed",
+            ),
+            (RunEventKind::TaskSkipped, "task.cancelled", "task.skipped"),
+            (RunEventKind::RunCancelled, "run.failed", "run.cancelled"),
+        ];
+        for (kind, legacy_sub, canonical) in cases {
+            let entry = entry(&[legacy_sub]);
+            let reply = super::format_event(
+                &event(kind),
+                "feishu",
+                &entry,
+                super::FormatOptions { dry_run: false },
+            )
+            .expect("legacy subscription should still match the de-collapsed event");
+            assert_eq!(reply.event_kind, canonical);
+        }
+        // and a new canonical subscription matches too
+        let entry = entry(&["task.approval_granted"]);
+        assert!(super::format_event(
+            &event(RunEventKind::TaskApprovalGranted),
+            "feishu",
+            &entry,
+            super::FormatOptions { dry_run: false },
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn legacy_run_failed_subscription_matches_all_terminal_kinds() {
+        // A pre-F-115 ["run.failed"] subscription matched the collapsed terminal
+        // run events; it must still match RunFailed / CancelRequested / RunCancelled,
+        // each reported under its own canonical v2 kind.
+        let cases = [
+            (RunEventKind::RunFailed, "run.failed"),
+            (RunEventKind::CancelRequested, "run.cancel_requested"),
+            (RunEventKind::RunCancelled, "run.cancelled"),
+        ];
+        for (kind, canonical) in cases {
+            let entry = entry(&["run.failed"]);
+            let reply = super::format_event(
+                &event(kind),
+                "feishu",
+                &entry,
+                super::FormatOptions { dry_run: false },
+            )
+            .expect("legacy run.failed subscription should match");
+            assert_eq!(reply.event_kind, canonical);
+        }
+    }
+
+    #[test]
+    fn legacy_run_completed_subscription_matches_run_failed() {
+        // A failed run used to be a run.completed event; a ["run.completed"]
+        // subscription must still see it, reported under canonical run.failed.
+        let entry = entry(&["run.completed"]);
+        let reply = super::format_event(
+            &event(RunEventKind::RunFailed),
+            "feishu",
+            &entry,
+            super::FormatOptions { dry_run: false },
+        )
+        .expect("run.completed subscription should still match a failed run");
+        assert_eq!(reply.event_kind, "run.failed");
     }
 
     #[test]
@@ -332,7 +414,10 @@ mod tests {
             timestamp: Utc::now(),
             kind,
             task_id: None,
+            status: None,
+            severity: None,
             message: None,
+            display: None,
             payload: Value::Null,
             refs: BTreeMap::new(),
         }

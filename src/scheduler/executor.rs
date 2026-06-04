@@ -431,8 +431,18 @@ impl RunCtx {
         if let Some(t) = task {
             finding = finding.task(t);
         }
-        if let Err(e) = findings::append_finding(&self.run_dir, finding) {
-            tracing::warn!("could not append {source} finding: {e:#}");
+        // Durable write first; only on success project a best-effort
+        // `finding.recorded` event (F-115). A projection failure is logged and
+        // swallowed — it must not undo the finding or break the run; a finding
+        // write failure means no projection event at all.
+        match findings::append_finding(&self.run_dir, finding) {
+            Ok(written) => events::project_finding_event(
+                &self.run_dir,
+                &written,
+                self.channels.as_ref(),
+                self.dry_run,
+            ),
+            Err(e) => tracing::warn!("could not append {source} finding: {e:#}"),
         }
     }
 
@@ -3193,11 +3203,7 @@ pub async fn run_plan(plan: Plan, projects: ProjectsConfig, cfg: ExecConfig) -> 
     record_event(
         &run_dir,
         &run_id,
-        if cancelled {
-            RunEventKind::RunCancelled
-        } else {
-            RunEventKind::RunCompleted
-        },
+        run_end_event_kind(cancelled, final_status),
         None,
         Some(format!("run finished with status {:?}", final_status)),
         json!({
@@ -3330,6 +3336,19 @@ fn record_event(
         run_dir, run_id, kind, task_id, message, payload, channels, dry_run,
     ) {
         tracing::warn!("could not append run event: {e:#}");
+    }
+}
+
+/// Canonical terminal run event for the run-end record. A failed run now emits
+/// `run.failed` (status `failed`) rather than `run.completed` with a Failed
+/// payload, so the event stream's status matches the F-112 buckets.
+fn run_end_event_kind(cancelled: bool, final_status: RunStatus) -> RunEventKind {
+    if cancelled {
+        RunEventKind::RunCancelled
+    } else if matches!(final_status, RunStatus::Failed) {
+        RunEventKind::RunFailed
+    } else {
+        RunEventKind::RunCompleted
     }
 }
 
@@ -3969,6 +3988,32 @@ async fn wait_for_approval(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn run_end_event_kind_distinguishes_failed_cancelled_done() {
+        use super::run_end_event_kind;
+        use crate::scheduler::events::RunEventKind;
+        use crate::scheduler::state::RunStatus;
+        // cancel wins regardless of the final status
+        assert_eq!(
+            run_end_event_kind(true, RunStatus::Failed),
+            RunEventKind::RunCancelled
+        );
+        assert_eq!(
+            run_end_event_kind(true, RunStatus::Cancelled),
+            RunEventKind::RunCancelled
+        );
+        // a failed run now emits run.failed, not run.completed
+        assert_eq!(
+            run_end_event_kind(false, RunStatus::Failed),
+            RunEventKind::RunFailed
+        );
+        // a clean run completes
+        assert_eq!(
+            run_end_event_kind(false, RunStatus::Done),
+            RunEventKind::RunCompleted
+        );
+    }
+
     const SAMPLE_CONTEXT: &str = "\
 ## Code Context
 
