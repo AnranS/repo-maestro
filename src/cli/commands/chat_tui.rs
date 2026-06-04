@@ -1243,21 +1243,12 @@ fn action_card_lines(a: &Action) -> Vec<Line<'static>> {
 
 fn draw_banner(f: &mut Frame, area: Rect, app: &AppState) {
     let (title_line, meter_line) = if let Some(s) = &app.state {
-        // Header line: run id + status + N/M progress + verified chip
-        let done = s
-            .tasks
-            .values()
-            .filter(|t| {
-                matches!(
-                    t.status,
-                    TaskStatus::Done
-                        | TaskStatus::Failed
-                        | TaskStatus::Cancelled
-                        | TaskStatus::Skipped
-                )
-            })
-            .count();
-        let total = s.tasks.len().max(1);
+        // Header line: run id + status + N/M progress + verified chip. Reuse the
+        // F-112 projector's tally (settled = done+failed+cancelled+skipped) so
+        // the TUI and the /monitor projection never disagree on progress.
+        let progress = crate::schema::monitor::RunProgress::from_state(s);
+        let done = progress.settled;
+        let total = progress.total.max(1);
         let status = run_status_label(&s.status);
         let verified = if s.verified {
             Span::styled(" · verified", Style::default().fg(Color::Green))

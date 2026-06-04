@@ -165,6 +165,60 @@ pub async fn run_findings_handler(Path(id): Path<String>) -> Response {
     }
 }
 
+/// F-112: read-only run monitor projection (`maestro.run_monitor.v1`). Thin —
+/// resolve run dir, load state, read findings (empty on miss), project, return.
+pub async fn run_monitor_handler(Path(id): Path<String>) -> Response {
+    let run_dir = match run_dir_from_id(&id) {
+        Ok(Some(dir)) => dir,
+        Ok(None) => return (StatusCode::NOT_FOUND, "run not found").into_response(),
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+    };
+    let state = match crate::scheduler::RunState::load(&run_dir) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    };
+    // Missing ledger is `[]` (read_findings handles it); a CORRUPT ledger must
+    // surface as 500, not silently project as "0 findings" (audit integrity).
+    let findings = match crate::scheduler::findings::read_findings(&run_dir) {
+        Ok(f) => f,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    };
+    let monitor = crate::schema::monitor::RunMonitor::from_state_and_findings(
+        &state,
+        &findings,
+        Some(chrono::Utc::now().to_rfc3339()),
+    );
+    Json(monitor).into_response()
+}
+
+/// F-112: read-only task detail projection (`maestro.task_detail.v1`). The URL
+/// `task` is validated as a single safe path component BEFORE the projector sees
+/// it — a traversal-like id is a `400`, never passed downstream.
+pub async fn task_detail_handler(Path((run, task)): Path<(String, String)>) -> Response {
+    if let Err(e) = paths::validate_path_component("task id", &task) {
+        return (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response();
+    }
+    let run_dir = match run_dir_from_id(&run) {
+        Ok(Some(dir)) => dir,
+        Ok(None) => return (StatusCode::NOT_FOUND, "run not found").into_response(),
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+    };
+    let state = match crate::scheduler::RunState::load(&run_dir) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    };
+    // Missing ledger is `[]` (read_findings handles it); a CORRUPT ledger must
+    // surface as 500, not silently project as "0 findings" (audit integrity).
+    let findings = match crate::scheduler::findings::read_findings(&run_dir) {
+        Ok(f) => f,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    };
+    match crate::schema::monitor::TaskDetail::from_state_and_findings(&state, &task, &findings) {
+        Some(detail) => Json(detail).into_response(),
+        None => (StatusCode::NOT_FOUND, "task not found").into_response(),
+    }
+}
+
 pub async fn run_replay_handler(Path(id): Path<String>) -> Response {
     let run_dir = match run_dir_from_id(&id) {
         Ok(Some(dir)) => dir,
@@ -722,4 +776,117 @@ pub async fn run_outcome(Path(id): Path<String>) -> Response {
         "drift": drift,
     }))
     .into_response()
+}
+
+#[cfg(test)]
+mod monitor_tests {
+    //! F-112 Step 2 — the two read-only handlers, exercised against a crafted
+    //! run dir in a throwaway workspace. Neutral fixture names only.
+    use super::{run_monitor_handler, task_detail_handler};
+    use axum::body::to_bytes;
+    use axum::extract::Path;
+    use axum::http::StatusCode;
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    /// One done run, two tasks (T1 depends on T0), one finding scoped to T0.
+    const RUN_STATE: &str = r#"{"run_id":"r-mon","spec":"neutral demo","started_at":"2026-06-04T00:00:00Z","ended_at":"2026-06-04T00:01:00Z","status":"done","max_parallel":1,"pid":0,"tasks":{"T0":{"id":"T0","project":"billing-service","agent":"mock","status":"done","started_at":null,"ended_at":null,"chat_id":null,"error":null,"attempts":0,"risk_level":null,"artifacts":{},"permission":null,"workflow_outputs":{},"log_path":"/abs/run/logs/T0.log","trajectory_path":null,"depends_on":[],"parallel_group":null,"requires_approval_after":false,"kind":"agent","memory_used":[],"context_bytes":null,"skills_triggered":[],"usage":null,"steps":null,"role":"backend_rust","resolved_agent_profile":"backend-specialist","resolved_review_profile":null,"workspace_path":"/abs/secret/ws","worktree_path":null},"T1":{"id":"T1","project":"web-frontend","agent":"mock","status":"done","started_at":null,"ended_at":null,"chat_id":null,"error":null,"attempts":0,"risk_level":null,"artifacts":{},"permission":null,"workflow_outputs":{},"log_path":"/abs/run/logs/T1.log","trajectory_path":null,"depends_on":["T0"],"parallel_group":null,"requires_approval_after":false,"kind":"verify","memory_used":[],"context_bytes":null,"skills_triggered":[],"usage":null,"steps":null,"role":null,"resolved_agent_profile":null,"resolved_review_profile":"contract-reviewer","workspace_path":null,"worktree_path":null}},"approvals_pending":[],"task_order":["T0","T1"],"session_id":null,"usage":{},"budget_tokens":null,"pending_gate":null,"goal":null,"acceptance_results":[],"verified":false,"auto_actions":[],"run_dir":"."}"#;
+
+    const FINDINGS: &str = "{\"schema_version\":\"maestro.finding.v1\",\"finding_id\":\"refute-1\",\"run_id\":\"r-mon\",\"seq\":1,\"task_id\":\"T0\",\"kind\":\"refute\",\"severity\":\"high\",\"summary\":\"x\",\"evidence_refs\":[],\"source\":\"refuter\",\"status\":\"open\",\"created_at\":\"2026-06-04T00:00:00Z\",\"provenance\":{\"producer\":\"refuter\"}}\n";
+
+    fn workspace() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        let run = tmp.path().join(".maestro/runs/r-mon");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("RUN_STATE.json"), RUN_STATE).unwrap();
+        std::fs::write(run.join("findings.ndjson"), FINDINGS).unwrap();
+        unsafe { std::env::set_var("MAESTRO_WORKSPACE_ROOT", tmp.path()) };
+        tmp
+    }
+
+    async fn body(resp: axum::response::Response) -> serde_json::Value {
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn monitor_returns_schema_and_counts() {
+        let _w = workspace();
+        let resp = run_monitor_handler(Path("r-mon".into())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body(resp).await;
+        assert_eq!(v["schema_version"], "maestro.run_monitor.v1");
+        assert_eq!(v["status"], "done");
+        assert_eq!(v["progress"]["total"], 2);
+        assert_eq!(v["progress"]["done"], 2);
+        assert_eq!(v["findings_summary"][0]["kind"], "refute");
+        assert_eq!(v["findings_summary"][0]["count"], 1);
+        // never leak the absolute workspace path
+        assert!(!v.to_string().contains("/abs/secret"));
+        unsafe { std::env::remove_var("MAESTRO_WORKSPACE_ROOT") };
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn monitor_unknown_run_is_404() {
+        let _w = workspace();
+        let resp = run_monitor_handler(Path("no-such-run".into())).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        unsafe { std::env::remove_var("MAESTRO_WORKSPACE_ROOT") };
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn task_detail_returns_task_scoped_findings_and_provenance() {
+        let _w = workspace();
+        let resp = task_detail_handler(Path(("r-mon".into(), "T0".into()))).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body(resp).await;
+        assert_eq!(v["schema_version"], "maestro.task_detail.v1");
+        assert_eq!(v["resolved_agent_profile"], "backend-specialist");
+        assert_eq!(v["downstream"][0], "T1");
+        // only T0's finding
+        assert_eq!(v["findings"].as_array().unwrap().len(), 1);
+        assert_eq!(v["findings"][0]["task_id"], "T0");
+        // T1 (no findings) returns an empty findings array
+        let resp = task_detail_handler(Path(("r-mon".into(), "T1".into()))).await;
+        let v = body(resp).await;
+        assert_eq!(v["findings"].as_array().unwrap().len(), 0);
+        assert!(!v.to_string().contains("/abs/"));
+        unsafe { std::env::remove_var("MAESTRO_WORKSPACE_ROOT") };
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn task_detail_unknown_task_is_404_and_bad_id_is_400() {
+        let _w = workspace();
+        let unknown = task_detail_handler(Path(("r-mon".into(), "ghost".into()))).await;
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        // a traversal-like task id is rejected at the boundary (400), never
+        // reaching the projector.
+        for bad in ["../escape", "bad/name", ".."] {
+            let resp = task_detail_handler(Path(("r-mon".into(), bad.into()))).await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "bad id {bad}");
+        }
+        unsafe { std::env::remove_var("MAESTRO_WORKSPACE_ROOT") };
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn corrupt_findings_ledger_is_500_not_silent_empty() {
+        // N1: a corrupt F-110 ledger is an audit failure — never project it as
+        // "0 findings". (A MISSING ledger is still `[]`, handled by read_findings.)
+        let w = workspace();
+        std::fs::write(
+            w.path().join(".maestro/runs/r-mon/findings.ndjson"),
+            "{ not valid json\n",
+        )
+        .unwrap();
+        let monitor = run_monitor_handler(Path("r-mon".into())).await;
+        assert_eq!(monitor.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let detail = task_detail_handler(Path(("r-mon".into(), "T0".into()))).await;
+        assert_eq!(detail.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        unsafe { std::env::remove_var("MAESTRO_WORKSPACE_ROOT") };
+    }
 }

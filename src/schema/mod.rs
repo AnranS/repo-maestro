@@ -1,9 +1,12 @@
 pub mod artifacts;
 pub mod channel_envelope;
+pub mod monitor;
 pub mod permissions;
 pub mod preview;
 pub mod redaction;
 pub mod trajectory;
+
+pub use monitor::{RUN_MONITOR_V1, TASK_DETAIL_V1};
 
 pub const PROVIDER_CAPABILITY_V1: &str = "maestro.provider_capability.v1";
 pub const PERMISSION_V1: &str = "maestro.permission.v1";
@@ -44,4 +47,12 @@ pub fn finding_version() -> String {
 
 pub fn plan_preview_version() -> String {
     PLAN_PREVIEW_V1.to_string()
+}
+
+pub fn run_monitor_version() -> String {
+    RUN_MONITOR_V1.to_string()
+}
+
+pub fn task_detail_version() -> String {
+    TASK_DETAIL_V1.to_string()
 }
