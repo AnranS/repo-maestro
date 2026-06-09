@@ -78,10 +78,10 @@ export function FailureRecoveryPanel({ state }: { state: RunState }) {
   return (
     <section className="rounded-lg border border-red-500/30 bg-red-500/5 p-3">
       <div className="mb-2 flex items-center gap-2">
-        <span className="inline-flex h-5 w-5 items-center justify-center rounded border border-red-500/30 bg-red-500/10 text-red-300">
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded border border-red-500/30 bg-red-500/10 text-status-danger">
           <AlertTriangle size={12} />
         </span>
-        <span className="text-[10px] uppercase tracking-wider text-red-300/80">
+        <span className="text-[10px] uppercase tracking-wider text-status-danger/80">
           {t("recover.title")}
         </span>
         <span className="text-[11px] text-ink-mute">
@@ -95,7 +95,7 @@ export function FailureRecoveryPanel({ state }: { state: RunState }) {
           return (
             <li key={tk.id} className="rounded-md border border-line/60 bg-bg/40 p-2">
               <div className="flex flex-wrap items-center gap-2 text-[12px]">
-                <code className="rounded bg-red-500/10 px-1.5 py-0.5 text-red-300">{tk.id}</code>
+                <code className="rounded bg-red-500/10 px-1.5 py-0.5 text-status-danger">{tk.id}</code>
                 <span className="text-ink-faint">{tk.project}</span>
                 {tk.attempts != null && tk.attempts > 1 && (
                   <span className="text-[10px] text-ink-faint">
@@ -115,7 +115,7 @@ export function FailureRecoveryPanel({ state }: { state: RunState }) {
                   {blkd.map((id) => (
                     <code
                       key={id}
-                      className="rounded bg-amber-500/10 px-1 py-0.5 text-amber-300/90"
+                      className="rounded bg-amber-500/10 px-1 py-0.5 text-status-warning/90"
                     >
                       {id}
                     </code>
@@ -133,8 +133,8 @@ export function FailureRecoveryPanel({ state }: { state: RunState }) {
           disabled={rerun === "launching" || rerun === "launched"}
           className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] font-medium ${
             rerun === "launched"
-              ? "border border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-              : "border border-red-500/30 bg-red-500/15 text-red-200 hover:bg-red-500/25"
+              ? "border border-emerald-500/30 bg-emerald-500/10 text-status-success"
+              : "border border-red-500/30 bg-red-500/15 text-status-danger hover:bg-red-500/25"
           } disabled:opacity-70`}
         >
           {rerun === "launched" ? (
@@ -152,16 +152,16 @@ export function FailureRecoveryPanel({ state }: { state: RunState }) {
         </button>
         <span className="text-[11px] text-ink-faint">{t("recover.hint")}</span>
       </div>
-      <div className="mt-2 flex items-center gap-2">
+      <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
         <span className="shrink-0 text-[10px] uppercase tracking-wider text-ink-faint">
           {t("recover.orTerminal")}
         </span>
-        <code className="flex-1 truncate rounded border border-line/60 bg-bg/70 px-2 py-1 font-mono text-[11px] text-ink-dim">
+        <code className="w-full min-w-0 flex-1 truncate rounded border border-line/60 bg-bg/70 px-2 py-1 font-mono text-[11px] text-ink-dim sm:w-auto">
           {rerunCmd}
         </code>
         <button
           onClick={copy}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded border border-line px-2 py-1 text-[11px] hover:border-accent/50 hover:text-ink-dim"
+          className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded border border-line px-2 py-1 text-[11px] hover:border-accent/50 hover:text-ink-dim"
         >
           {copied ? <Check size={12} /> : <Copy size={12} />}
           {copied ? t("common.copied") : t("common.copy")}

@@ -36,11 +36,11 @@ use std::io::stdout;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::chat::actions::{execute_action_with_session, Action, ActionStatus};
+use crate::chat::actions::{Action, ActionStatus};
 use crate::chat::sessions::{
     self as chat_sessions, Message as ChatMessage, Role as ChatRole, Session,
 };
-use crate::chat::stream::{send_streaming, StreamEvent};
+use crate::chat::stream::StreamEvent;
 use crate::paths;
 use crate::scheduler::state::{RunState, RunStatus, TaskState, TaskStatus};
 use tokio::sync::mpsc;
@@ -167,6 +167,9 @@ struct ActionUpdate {
     action_id: String,
     final_status: ActionStatus,
     output: Option<String>,
+    /// Set for a guard refusal (busy / not-found) — shown as a flash; the action
+    /// keeps its prior on-disk status (e.g. pending) rather than being stamped.
+    note: Option<String>,
 }
 
 impl AppState {
@@ -420,13 +423,17 @@ fn drain_action_updates(app: &mut AppState) {
                 }
             }
         }
-        let (label, kind) = match upd.final_status {
-            ActionStatus::Done => ("action done", FlashKind::Success),
-            ActionStatus::Failed => ("action failed", FlashKind::Error),
-            ActionStatus::Rejected => ("action rejected", FlashKind::Info),
-            _ => ("action update", FlashKind::Info),
-        };
-        app.set_flash(kind, format!("{label} · {}", upd.action_id));
+        if let Some(note) = &upd.note {
+            app.set_flash(FlashKind::Info, note.clone());
+        } else {
+            let (label, kind) = match upd.final_status {
+                ActionStatus::Done => ("action done", FlashKind::Success),
+                ActionStatus::Failed => ("action failed", FlashKind::Error),
+                ActionStatus::Rejected => ("action rejected", FlashKind::Info),
+                _ => ("action update", FlashKind::Info),
+            };
+            app.set_flash(kind, format!("{label} · {}", upd.action_id));
+        }
     }
 }
 
@@ -439,81 +446,60 @@ fn decide_action(app: &mut AppState, action_id: String, approve: bool) {
         app.set_flash(FlashKind::Error, "no chat session");
         return;
     };
+    let sid = session.id.clone();
 
-    // Locate + stamp the in-memory status. Save to disk so a concurrent
-    // WebUI read sees the change immediately.
-    let mut session = match chat_sessions::load(&session.id) {
-        Ok(s) => s,
-        Err(_) => session,
-    };
-    let mut hit: Option<Action> = None;
-    'outer: for m in session.messages.iter_mut() {
-        for a in m.actions.iter_mut() {
-            if a.id == action_id {
-                if approve {
-                    a.status = Some(ActionStatus::Running);
-                } else {
-                    a.status = Some(ActionStatus::Rejected);
-                }
-                hit = Some(a.clone());
-                break 'outer;
-            }
-        }
-    }
-    let Some(action) = hit else {
+    // Read-only lookup for an immediate not-found toast + the label; the wrapper
+    // (not this fn) stamps status, so we never mark Running before owning.
+    let on_disk = chat_sessions::load(&sid).unwrap_or(session);
+    let Some(action) = on_disk
+        .messages
+        .iter()
+        .flat_map(|m| m.actions.iter())
+        .find(|a| a.id == action_id)
+        .cloned()
+    else {
         app.set_flash(FlashKind::Error, format!("action {action_id} not found"));
         return;
     };
-    let _ = chat_sessions::save(&session);
-    app.chat_session = Some(session.clone());
 
-    if !approve {
-        app.set_flash(FlashKind::Info, format!("rejected {action_id}"));
-        return;
+    // F-119: route approve AND reject through the shared ownership wrapper. Approve
+    // claims the session (busy → keep pending + toast, never bypass); reject is
+    // ownership-free inside the wrapper.
+    let decision: &'static str = if approve { "approve" } else { "reject" };
+    if approve {
+        app.set_flash(
+            FlashKind::Info,
+            format!("running action · {}", action.label),
+        );
     }
-
-    // Approve path: spawn the subcommand, ping back on the action channel.
     let (tx, rx) = mpsc::channel::<ActionUpdate>(4);
-    // Merge with any existing receiver — but in practice we only have one
-    // action in flight at a time, so a fresh channel each time is fine.
     app.action_rx = Some(rx);
-    let sid = session.id.clone();
-    let aid = action.id.clone();
-    app.set_flash(
-        FlashKind::Info,
-        format!("running action · {}", action.label),
-    );
+    let aid = action_id;
     tokio::spawn(async move {
-        let res = execute_action_with_session(&action, Some(&sid)).await;
-        // Persist final status to disk so the WebUI sees it too.
-        if let Ok(mut sess) = chat_sessions::load(&sid) {
-            for m in sess.messages.iter_mut() {
-                for a in m.actions.iter_mut() {
-                    if a.id == aid {
-                        match &res {
-                            Ok(out) => {
-                                a.status = Some(ActionStatus::Done);
-                                a.output = Some(out.clone());
-                            }
-                            Err(e) => {
-                                a.status = Some(ActionStatus::Failed);
-                                a.output = Some(format!("{e:#}"));
-                            }
-                        }
-                    }
-                }
-            }
-            let _ = chat_sessions::save(&sess);
-        }
-        let upd = ActionUpdate {
-            action_id: aid,
-            final_status: match &res {
-                Ok(_) => ActionStatus::Done,
-                Err(_) => ActionStatus::Failed,
+        let upd = match crate::chat::turn::run_chat_action_with_owner(&sid, &aid, decision).await {
+            Ok(act) => ActionUpdate {
+                final_status: act.status.unwrap_or(ActionStatus::Done),
+                output: act.output,
+                note: None,
+                action_id: aid,
             },
-            output: match res {
-                Ok(out) => Some(out),
-                Err(e) => Some(format!("{e:#}")),
+            Err(crate::chat::turn::ActionError::Busy) => ActionUpdate {
+                final_status: ActionStatus::Pending,
+                output: None,
+                note: Some("session is busy in another turn or action".to_string()),
+                action_id: aid,
+            },
+            Err(crate::chat::turn::ActionError::Internal(_)) => ActionUpdate {
+                final_status: ActionStatus::Failed,
+                output: None,
+                note: Some("action failed".to_string()),
+                action_id: aid,
+            },
+            Err(_) => ActionUpdate {
+                final_status: ActionStatus::Pending,
+                output: None,
+                note: Some("action could not run".to_string()),
+                action_id: aid,
             },
         };
         let _ = tx.send(upd).await;
@@ -666,14 +652,46 @@ fn start_chat_turn(app: &mut AppState, text: String) {
         s.messages
             .push(ChatMessage::new(ChatRole::User, text.clone()));
     }
-    let session_for_send = session.clone();
+    // F-119: route through the shared ownership guard. Persist the session so the
+    // wrapper resolves it; bridge the wrapper's stream into the TUI's channel and
+    // surface a busy/error refusal as an Error frame.
+    let _ = chat_sessions::save(&session);
+    let session_id = session.id.clone();
     tokio::spawn(async move {
-        if let Err(e) = send_streaming(session_for_send, text, tx.clone()).await {
-            let _ = tx
-                .send(StreamEvent::Error {
-                    message: format!("{e:#}"),
-                })
-                .await;
+        match crate::chat::turn::start_chat_turn(crate::chat::turn::ChatTurnRequest {
+            session_id: Some(session_id),
+            text,
+            model: None,
+            provider: None,
+            mode: None,
+            turn_id: None,
+        })
+        .await
+        {
+            Ok(mut wrapper_rx) => {
+                while let Some(ev) = wrapper_rx.recv().await {
+                    if tx.send(ev).await.is_err() {
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                let message = match e {
+                    crate::chat::turn::TurnError::Busy => {
+                        "chat session is busy in another turn or action".to_string()
+                    }
+                    crate::chat::turn::TurnError::InvalidId => {
+                        "invalid chat session id".to_string()
+                    }
+                    crate::chat::turn::TurnError::TurnRunning
+                    | crate::chat::turn::TurnError::TurnPayloadMismatch
+                    | crate::chat::turn::TurnError::TurnNotRetriable => {
+                        "chat turn could not start".to_string()
+                    }
+                    crate::chat::turn::TurnError::Internal(e) => format!("{e:#}"),
+                };
+                let _ = tx.send(StreamEvent::Error { message }).await;
+            }
         }
     });
 }

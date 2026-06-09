@@ -2,6 +2,7 @@ import { useState } from "react"
 import { Check, X, Target, ChevronDown, ChevronRight } from "lucide-react"
 import type { Goal, AcceptanceResult, RunState } from "../types"
 import { t } from "../i18n"
+import { CollapsibleSection } from "./ui/CollapsibleSection"
 
 interface Props {
   goal?: Goal | null
@@ -15,48 +16,28 @@ const formatExit = (code: number | null | undefined): string => {
   return `exit ${code}`
 }
 
-export function GoalPanel({ goal, results, verified, status }: Props) {
+export function GoalPanel({ goal, results, verified }: Props) {
   if (!goal || (!goal.description && !goal.acceptance?.length)) return null
 
   const declared = goal.acceptance ?? []
   const ran = results ?? []
   const hasResults = ran.length > 0
-  const dagFinished = status !== "running"
 
   const passed = ran.filter((r) => r.passed).length
   const total = hasResults ? ran.length : declared.length
 
-  const headerVariant: "ok" | "fail" | "pending" =
-    !hasResults
-      ? "pending"
-      : verified
-        ? "ok"
-        : "fail"
-
-  const headerStyle: Record<typeof headerVariant, string> = {
-    ok: "bg-emerald-500/10 border-emerald-500/30 text-emerald-200",
-    fail: "bg-red-500/10 border-red-500/30 text-red-200",
-    pending: "bg-bg-panel border-line text-ink-dim",
-  }
-
   const headerLabel = (() => {
-    if (!hasResults) return dagFinished ? t("tasks.acceptancePending") : t("tasks.acceptancePending")
+    if (!hasResults) return t("tasks.acceptancePending")
     if (verified) return `${passed}/${total} · ${t("tasks.verified")}`
     return `${passed}/${total} · ${t("tasks.notVerified")}`
   })()
 
   return (
-    <section className="bg-bg-panel border border-line rounded-xl">
-      <div className="px-4 py-2.5 border-b border-line flex items-center gap-3">
-        <Target size={13} className="text-ink-faint" />
-        <span className="text-xs uppercase tracking-wider text-ink-faint">
-          {t("tasks.goal")}
-        </span>
-        <span className={`ml-auto inline-flex items-center gap-1.5 px-2 py-0.5 rounded border text-[11px] ${headerStyle[headerVariant]}`}>
-          {headerLabel}
-        </span>
-      </div>
-
+    <CollapsibleSection
+      title={t("tasks.goal")}
+      icon={<Target size={13} className="shrink-0 text-ink-faint" />}
+      summary={headerLabel}
+    >
       {goal.description && (
         <div className="px-4 py-3 border-b border-line/40 text-sm text-ink-dim">
           {goal.description}
@@ -82,7 +63,7 @@ export function GoalPanel({ goal, results, verified, status }: Props) {
               ))}
         </div>
       )}
-    </section>
+    </CollapsibleSection>
   )
 }
 
@@ -90,8 +71,8 @@ function Row({ result }: { result: AcceptanceResult }) {
   const [open, setOpen] = useState(false)
   const Icon = result.passed ? Check : X
   const iconClass = result.passed
-    ? "text-emerald-300 bg-emerald-500/15 border-emerald-500/30"
-    : "text-red-300 bg-red-500/15 border-red-500/30"
+    ? "text-status-success bg-emerald-500/15 border-emerald-500/30"
+    : "text-status-danger bg-red-500/15 border-red-500/30"
 
   const hasOutput = !!result.output
 

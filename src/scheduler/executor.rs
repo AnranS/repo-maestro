@@ -27,6 +27,7 @@ use super::state::{AutoAction, RunState, RunStatus, TaskStatus, WorkflowOutputSt
 use super::trajectory;
 use super::verify;
 use super::worktree_policy::WorktreePolicy;
+use crate::schema::context::{ContextLayerKind, ContextLayerRef};
 
 #[derive(Debug, Clone)]
 pub struct ExecConfig {
@@ -72,6 +73,11 @@ pub struct ExecConfig {
     /// two boundaries instead of on every task.
     pub plan_gate: bool,
     pub outcome_gate: bool,
+
+    /// If this run executes a `DeliverySpec`'s plan (F-127b `delivery run`), the
+    /// owning delivery id, stamped onto `RunState.delivery_id` so the run knows
+    /// its owner. `None` for an ordinary run.
+    pub delivery_id: Option<String>,
 }
 
 impl Default for ExecConfig {
@@ -90,6 +96,7 @@ impl Default for ExecConfig {
             max_tokens: None,
             plan_gate: false,
             outcome_gate: false,
+            delivery_id: None,
         }
     }
 }
@@ -1421,8 +1428,53 @@ async fn handle_post_task_approval(
     }
     ctx.write_state().await?;
 
+    // F-126: node tool-policy violation gate (opt-in `gate_on_policy_violation`,
+    // default off). A PURE evaluator over the task's own state decides
+    // allow/flag_only/gate; we only act when the run opts in and is not a
+    // dry-run. This NEVER intercepts agent-internal tool calls — it is a
+    // post-run audit gate before integration, reusing the approval machinery.
+    let mut policy_gated = false;
+    let mut policy_reasons: Vec<String> = Vec::new();
+    if projects.defaults.gate_on_policy_violation && !ctx.dry_run {
+        use crate::scheduler::policy_gate::PolicyDecision;
+        let verdict = {
+            let s = ctx.lock().await;
+            s.tasks
+                .get(task_id)
+                .map(crate::scheduler::policy_gate::evaluate)
+        };
+        if let Some(v) = verdict {
+            match v.decision {
+                PolicyDecision::Gate => {
+                    policy_gated = true;
+                    policy_reasons = v.reasons.clone();
+                    ctx.record_finding(
+                        FindingKind::Risk,
+                        Severity::High,
+                        "policy-gate",
+                        v.reasons.join("; "),
+                        Some(task_id),
+                    );
+                }
+                PolicyDecision::FlagOnly => {
+                    // Absent/legacy policy with observed effects: record a finding
+                    // but DO NOT gate (never block a legacy run).
+                    ctx.record_finding(
+                        FindingKind::Risk,
+                        Severity::Medium,
+                        "policy-gate",
+                        v.reasons.join("; "),
+                        Some(task_id),
+                    );
+                }
+                PolicyDecision::Allow => {}
+            }
+        }
+        ctx.write_state().await?;
+    }
+
     let risk_gated = high_risk && projects.defaults.gate_on_high_risk;
-    if !t.requires_approval_after && !risk_gated {
+    if !t.requires_approval_after && !risk_gated && !policy_gated {
         return Ok(());
     }
     {
@@ -1435,7 +1487,9 @@ async fn handle_post_task_approval(
         }
     }
     ctx.write_state().await?;
-    let reason = if risk_gated && !t.requires_approval_after {
+    let reason = if policy_gated && !t.requires_approval_after && !risk_gated {
+        "tool-policy violation — awaiting approval before integration"
+    } else if risk_gated && !t.requires_approval_after {
         "high-risk change — awaiting approval before integration"
     } else {
         "task is awaiting approval"
@@ -1444,7 +1498,12 @@ async fn handle_post_task_approval(
         RunEventKind::TaskApprovalRequested,
         Some(task_id),
         Some(reason.to_string()),
-        json!({ "high_risk": high_risk, "risk_gated": risk_gated }),
+        json!({
+            "high_risk": high_risk,
+            "risk_gated": risk_gated,
+            "policy_gated": policy_gated,
+            "policy_reasons": policy_reasons,
+        }),
     );
     ctx.tick();
     tracing::info!(
@@ -1622,6 +1681,7 @@ fn assemble_prompt_prelude(
     instruction_section: Option<String>,
     skill_section: Option<String>,
     attributions: &HashMap<String, String>,
+    recorder: &mut crate::scheduler::context::ContextLayerRecorder,
 ) -> Option<String> {
     let role_prelude = resolved_role
         .as_ref()
@@ -1632,7 +1692,7 @@ fn assemble_prompt_prelude(
     // Deliver unresolved mailbox messages addressed to this task into its prompt
     // — this closes the multi-agent loop: peers write to the mailbox and the
     // recipient actually reads them here, by project / role / task id.
-    let inbox_section = if matches!(task.kind, TaskKind::Agent) {
+    let (inbox_section, inbox_count) = if matches!(task.kind, TaskKind::Agent) {
         let role_id = resolved_role_name.clone().unwrap_or_default();
         let identities: Vec<&str> = [task.project.as_str(), role_id.as_str(), task_id]
             .into_iter()
@@ -1653,9 +1713,10 @@ fn assemble_prompt_prelude(
             Some(role) => format!("project `{}`, role `{}`", task.project, role),
             None => format!("project `{}`", task.project),
         };
-        crate::mailbox::render_inbox(&messages, &audience)
+        let count = messages.len() as u32;
+        (crate::mailbox::render_inbox(&messages, &audience), count)
     } else {
-        None
+        (None, 0)
     };
 
     // Failure recovery: if a previous attempt failed, inject its diagnosis so
@@ -1707,6 +1768,84 @@ fn assemble_prompt_prelude(
         None
     };
 
+    // F-116: record one layer per present internal prelude section, in join order.
+    // (project.instructions and skills.section are recorded by the caller, around
+    // this call, so the manifest order matches the rendered prelude order.) Bytes
+    // are each section's trim_end length — what `join_prompt_prelude` includes.
+    let mut record_section = |kind: ContextLayerKind,
+                              id: &str,
+                              label: &str,
+                              section: &Option<String>,
+                              item_count: u32,
+                              refs: Vec<ContextLayerRef>| {
+        if let Some(s) = section {
+            if !s.trim().is_empty() {
+                recorder.record(
+                    kind,
+                    id,
+                    label,
+                    "prelude",
+                    item_count,
+                    s.trim_end().len() as u64,
+                    refs,
+                );
+            }
+        }
+    };
+    record_section(
+        ContextLayerKind::AttemptDiagnosis,
+        "attempt.diagnosis",
+        "previous-attempt diagnosis",
+        &attribution_section,
+        1,
+        vec![],
+    );
+    record_section(
+        ContextLayerKind::ContractConsumed,
+        "contract.consumed",
+        "consumed contract content",
+        &contract_section,
+        1,
+        vec![],
+    );
+    record_section(
+        ContextLayerKind::CodeContext,
+        "code.context",
+        "codegraph relevant code",
+        &code_context_section,
+        1,
+        vec![],
+    );
+    record_section(
+        ContextLayerKind::MailboxInbox,
+        "mailbox.inbox",
+        "delivered mailbox messages",
+        &inbox_section,
+        inbox_count,
+        vec![ContextLayerRef::new("mailbox", "inbox").count(inbox_count)],
+    );
+    record_section(
+        ContextLayerKind::ModeConstraints,
+        "mode.constraints",
+        "role/mode permission constraints",
+        &mode_section,
+        1,
+        vec![],
+    );
+    let role_refs: Vec<ContextLayerRef> = resolved_role_name
+        .as_deref()
+        .and_then(|n| ContextLayerRef::checked("role", n))
+        .into_iter()
+        .collect();
+    record_section(
+        ContextLayerKind::RolePrelude,
+        "role.prelude",
+        "resolved role prelude",
+        &role_prelude,
+        1,
+        role_refs,
+    );
+
     adapter::join_prompt_prelude(&[
         instruction_section,
         attribution_section,
@@ -1729,6 +1868,7 @@ fn assemble_memory_context(
     projects: &ProjectsConfig,
     memory: &MemoryStore,
     memory_index: &mut Option<Vec<crate::memory::retrieval::Chunk>>,
+    recorder: &mut crate::scheduler::context::ContextLayerRecorder,
 ) -> Vec<MemorySlice> {
     let topics = resolve_memory_topics(task, projects);
     let mut context = if matches!(task.kind, TaskKind::Agent) {
@@ -1750,6 +1890,12 @@ fn assemble_memory_context(
         vec![]
     };
 
+    // F-116: per-memory-source boundaries in `context` (slices are appended in
+    // source order), so we can record one layer per source after capping.
+    let topic_end = context.len();
+    let mut contract_end = topic_end;
+    let mut dep_end = topic_end;
+
     // Contract-aware fan-in: if this project consumes a contract,
     // pull the most recent L2 decisions from whatever project
     // PRODUCES that contract. The consumer doesn't need to know
@@ -1767,6 +1913,7 @@ fn assemble_memory_context(
             Ok(_) => {}
             Err(e) => tracing::warn!("contract-aware L2 fan-in failed: {e:#}"),
         }
+        contract_end = context.len();
 
         // Topology-aware fan-in: also pull recent L2 from every project
         // this one depends on (incl. edges discovery inferred from
@@ -1794,6 +1941,7 @@ fn assemble_memory_context(
             Ok(_) => {}
             Err(e) => tracing::warn!("topology-aware L2 fan-in failed: {e:#}"),
         }
+        dep_end = context.len();
     }
 
     // Semantic (lexical TF-IDF) retrieval: top-K relevant stable
@@ -1877,6 +2025,54 @@ fn assemble_memory_context(
             slice.content = format!("{capped}\n… (memory slice truncated)");
         }
     }
+
+    // F-116: record one layer per memory source AFTER capping, so byte counts
+    // reflect what actually entered the prompt. Provenance only — topic names as
+    // refs (each `ContextLayerRef::checked`, so an odd topic is dropped to a count
+    // rather than failing the manifest), never the slice bodies.
+    let mem_sources = [
+        (
+            ContextLayerKind::MemoryTopicScope,
+            "memory.topic_scope",
+            "topic-scoped L1 facts",
+            0,
+            topic_end,
+        ),
+        (
+            ContextLayerKind::MemoryContractFanIn,
+            "memory.contract_fan_in",
+            "contract-aware L2 fan-in",
+            topic_end,
+            contract_end,
+        ),
+        (
+            ContextLayerKind::MemoryDependencyFanIn,
+            "memory.dependency_fan_in",
+            "dependency-topology L2 fan-in",
+            contract_end,
+            dep_end,
+        ),
+        (
+            ContextLayerKind::MemoryPromptSimilarity,
+            "memory.prompt_similarity",
+            "prompt-similarity retrieval",
+            dep_end,
+            context.len(),
+        ),
+    ];
+    for (kind, id, label, start, end) in mem_sources {
+        let slices = &context[start..end];
+        if slices.is_empty() {
+            continue;
+        }
+        let bytes: u64 = slices.iter().map(|s| s.content.len() as u64).sum();
+        let refs: Vec<ContextLayerRef> = slices
+            .iter()
+            .filter_map(|s| ContextLayerRef::checked("memory_topic", &s.topic))
+            .collect();
+        recorder.record(kind, id, label, "memory", slices.len() as u32, bytes, refs);
+    }
+
     context
 }
 
@@ -2042,7 +2238,12 @@ async fn dispatch_one_task(
         envelope_dry_run,
     );
 
-    let mut context = assemble_memory_context(&task, projects, memory, memory_index);
+    // F-116: record the prompt-context layers as the existing assembly path builds
+    // them (recorder, not renderer — no prompt-byte change). Written as a per-task
+    // manifest just before the adapter is invoked (agent tasks only).
+    let mut context_recorder = crate::scheduler::context::ContextLayerRecorder::new();
+    let mut context =
+        assemble_memory_context(&task, projects, memory, memory_index, &mut context_recorder);
 
     let workflow_inputs = match load_workflow_inputs(&task, state).await {
         Ok(inputs) => inputs,
@@ -2067,7 +2268,37 @@ async fn dispatch_one_task(
             .await;
         }
     };
-    context.extend(workflow_inputs);
+    // F-116: workflow inputs are the next context layer (after memory). Bytes =
+    // the slice content actually injected; refs come from the inputs that really
+    // entered the prompt (alias + producer.output), never the raw `task.inputs`
+    // table and never the producer's snapshot/source path (which lives in the body).
+    if !workflow_inputs.is_empty() {
+        let bytes: u64 = workflow_inputs
+            .iter()
+            .map(|w| w.slice.content.len() as u64)
+            .sum();
+        let mut refs: Vec<ContextLayerRef> = Vec::new();
+        for w in &workflow_inputs {
+            if let Some(r) = ContextLayerRef::checked("workflow_input", &w.alias) {
+                refs.push(r);
+            }
+            if let Some(r) =
+                ContextLayerRef::checked("workflow_output", format!("{}.{}", w.producer, w.output))
+            {
+                refs.push(r);
+            }
+        }
+        context_recorder.record(
+            ContextLayerKind::WorkflowInputs,
+            "workflow.inputs",
+            "workflow outputs injected as context",
+            "workflow",
+            workflow_inputs.len() as u32,
+            bytes,
+            refs,
+        );
+    }
+    context.extend(workflow_inputs.into_iter().map(|w| w.slice));
 
     if !context.is_empty() {
         tracing::debug!(
@@ -2217,6 +2448,47 @@ async fn dispatch_one_task(
         Vec::new()
     };
     let instruction_section = crate::project_instructions::render_section(&project_instructions);
+    // F-116: project.instructions is the first prelude layer. Only
+    // workspace-relative sources become refs (checked); an absolute/outside source
+    // degrades to a count, never a manifest failure.
+    if let Some(s) = instruction_section.as_deref() {
+        if !s.trim().is_empty() {
+            let refs: Vec<ContextLayerRef> = project_instructions
+                .iter()
+                .filter_map(|pi| ContextLayerRef::checked("instruction", &pi.source))
+                .collect();
+            context_recorder.record(
+                ContextLayerKind::ProjectInstructions,
+                "project.instructions",
+                "project instruction files",
+                "project_instructions",
+                project_instructions.len() as u32,
+                s.trim_end().len() as u64,
+                refs,
+            );
+        }
+    }
+    // Capture skills.section metadata before `skill_section` is moved into the
+    // prelude builder; recorded after the call so it stays the last prelude layer.
+    let skills_layer = skill_section
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| {
+            let refs: Vec<ContextLayerRef> = injected_skills
+                .iter()
+                .filter_map(|sk| {
+                    ContextLayerRef::checked(
+                        "skill",
+                        format!("{}/{}", sk.scope.dir_name(), sk.name),
+                    )
+                })
+                .collect();
+            (
+                s.trim_end().len() as u64,
+                injected_skills.len() as u32,
+                refs,
+            )
+        });
     let prompt_prelude = assemble_prompt_prelude(
         &task,
         &task_id,
@@ -2228,7 +2500,19 @@ async fn dispatch_one_task(
         instruction_section,
         skill_section,
         attributions,
+        &mut context_recorder,
     );
+    if let Some((bytes, count, refs)) = skills_layer {
+        context_recorder.record(
+            ContextLayerKind::SkillsSection,
+            "skills.section",
+            "injected skill playbooks",
+            "skills",
+            count,
+            bytes,
+            refs,
+        );
+    }
     {
         let mut s = state.lock().await;
         if let Some(ts) = s.tasks.get_mut(&task_id) {
@@ -2240,6 +2524,43 @@ async fn dispatch_one_task(
             ts.resolved_agent_profile = writer.profile.clone();
         }
     }
+
+    // F-116: the task body is the final layer; then write the per-task context
+    // manifest — best-effort, agent tasks only, after context is frozen and before
+    // the adapter runs. A write failure only warns; it never fails the task.
+    context_recorder.record(
+        ContextLayerKind::TaskPrompt,
+        "task.prompt",
+        "user-authored task body",
+        "plan",
+        1,
+        task.prompt.len() as u64,
+        vec![],
+    );
+    // Build the manifest now (context is frozen) but DEFER the write until every
+    // synchronous setup gate has passed, so a task that fails worktree-policy setup
+    // never leaves an orphan "looks-dispatched" manifest behind (N2). Agent only.
+    let pending_context_manifest = matches!(task.kind, TaskKind::Agent).then(|| {
+        crate::schema::context::TaskContextManifest::new(
+            &run_id,
+            &task_id,
+            &task.project,
+            "agent",
+            &adapter_name,
+            Utc::now().to_rfc3339(),
+            context_recorder.into_layers(),
+        )
+        .model(model.clone())
+        .role(
+            resolved_role
+                .as_ref()
+                .map(|r| r.name.clone())
+                .or(resolved_role_name.clone()),
+        )
+        // resolved_review_profile is not decided pre-adapter; review provenance
+        // stays on F-114 task state.
+        .profiles(writer.profile.clone(), None)
+    });
 
     // Adapter-agnostic memory header in the log.
     let mut header = format!(
@@ -2452,6 +2773,15 @@ async fn dispatch_one_task(
     write_state(state).await?;
     let _ = state_tx.send(());
 
+    // F-116: all synchronous setup gates have passed — now persist the deferred
+    // context manifest (agent tasks only), just before the adapter task is built.
+    // Best-effort: a write failure only warns and never fails the task.
+    if let Some(manifest) = &pending_context_manifest {
+        if let Err(e) = crate::scheduler::context::write_manifest(&run_dir, manifest) {
+            tracing::warn!("could not write context manifest for task {task_id}: {e:#}");
+        }
+    }
+
     let agent_task = AgentTask {
         task_id: task.id.clone(),
         workspace: effective_workspace.clone(),
@@ -2473,6 +2803,7 @@ async fn dispatch_one_task(
         model,
         role_prelude: prompt_prelude,
         allowed_tools: mode.allowed_tools.clone(),
+        harden: crate::runtime_harden::Hardening::from(&projects.defaults.runtime_hardening),
     };
 
     let state_for_task = state.clone();
@@ -2607,6 +2938,23 @@ async fn dispatch_one_task(
     Ok(LoopFlow::Proceed)
 }
 
+/// F-122: write `PLAN_PREVIEW.json` next to the pinned `PLAN.yaml`. Reuses the
+/// F-111 `plan_preview` verbatim (same shape as `plan validate --json`) and the
+/// same stable hash the resume descriptor uses, so the pin never forks the
+/// preview algorithm and a reader can verify it against the run dir's PLAN.yaml.
+fn pin_plan_preview(run_dir: &Path, plan: &Plan, projects: &ProjectsConfig) -> Result<()> {
+    let report = crate::config::analyze::analyze(plan, projects);
+    let preview = crate::config::analyze::plan_preview(plan, &report);
+    let plan_hash = crate::file_guard::file_hash(&run_dir.join(paths::PLAN_SNAPSHOT))?;
+    let snapshot = crate::schema::preview::PlanPreviewSnapshot::new("run", plan_hash, preview);
+    std::fs::write(
+        run_dir.join(paths::PLAN_PREVIEW_SNAPSHOT),
+        snapshot.to_json_pretty()?,
+    )
+    .context("write PLAN preview snapshot")?;
+    Ok(())
+}
+
 pub async fn run_plan(plan: Plan, projects: ProjectsConfig, cfg: ExecConfig) -> Result<RunState> {
     let memory = MemoryStore::open()?;
 
@@ -2635,6 +2983,14 @@ pub async fn run_plan(plan: Plan, projects: ProjectsConfig, cfg: ExecConfig) -> 
     )
     .context("write PLAN snapshot")?;
 
+    // F-122: pin the compiled plan preview beside PLAN.yaml so UI/audit reads the
+    // exact runtime source of truth (never a later recomputed/forked preview).
+    // Best-effort, mirroring the resume descriptor below — a real run must not
+    // fail just because the pin couldn't be written.
+    if let Err(e) = pin_plan_preview(&run_dir, &plan, &projects) {
+        tracing::warn!("F-122 plan preview pin: {e:#}");
+    }
+
     // refresh `current` symlink
     let current = paths::current_run_link()?;
     let _ = std::fs::remove_file(&current);
@@ -2651,6 +3007,7 @@ pub async fn run_plan(plan: Plan, projects: ProjectsConfig, cfg: ExecConfig) -> 
         run_dir.clone(),
     );
     state.session_id = cfg.session_id.clone();
+    state.delivery_id = cfg.delivery_id.clone();
     state.budget_tokens = cfg.max_tokens;
     for e in &cfg.wired_contract_edges {
         state.auto_actions.push(AutoAction {
@@ -2679,6 +3036,15 @@ pub async fn run_plan(plan: Plan, projects: ProjectsConfig, cfg: ExecConfig) -> 
         channels_config.as_ref(),
         envelope_dry_run,
     );
+
+    // F-117: initial resume descriptor, now that PLAN.yaml + RUN_STATE.json + the
+    // initial run event are all on disk. Best-effort — never fails the run.
+    {
+        let snapshot = state.lock().await.clone();
+        if let Err(e) = crate::scheduler::resume::refresh_descriptor(&run_dir, &snapshot) {
+            tracing::warn!("F-117 resume descriptor (initial): {e:#}");
+        }
+    }
 
     let (state_tx, _) = broadcast::channel::<()>(64);
 
@@ -2721,6 +3087,10 @@ pub async fn run_plan(plan: Plan, projects: ProjectsConfig, cfg: ExecConfig) -> 
                 Some("plan gate rejected — run cancelled before any task ran".to_string()),
                 json!({ "gate": "plan" }),
             );
+            // F-117: terminal (cancelled at the plan gate) — keep the guard current.
+            if let Err(e) = crate::scheduler::resume::refresh_descriptor(&run_dir, &final_state) {
+                tracing::warn!("F-117 resume descriptor (plan-gate cancel): {e:#}");
+            }
             return Ok(final_state);
         }
     }
@@ -3034,6 +3404,16 @@ pub async fn run_plan(plan: Plan, projects: ProjectsConfig, cfg: ExecConfig) -> 
         write_state(&state).await?;
         let _ = state_tx.send(());
 
+        // F-117: this task just settled (terminal status + captured workflow
+        // outputs are now persisted) — refresh the resume descriptor so a kill
+        // here leaves a current guard. Best-effort — never fails the run.
+        {
+            let snapshot = state.lock().await.clone();
+            if let Err(e) = crate::scheduler::resume::refresh_descriptor(&run_dir, &snapshot) {
+                tracing::warn!("F-117 resume descriptor (after task {task_id}): {e:#}");
+            }
+        }
+
         match handle_task_failure(
             &ctx,
             &projects,
@@ -3253,6 +3633,13 @@ pub async fn run_plan(plan: Plan, projects: ProjectsConfig, cfg: ExecConfig) -> 
 
     let final_state = state.lock().await.clone();
 
+    // F-117: run is terminal — final resume descriptor over the complete event
+    // ledger + terminal state (records ALL task statuses; a terminal run refuses
+    // resume in Step 3, but the guard stays current). Best-effort.
+    if let Err(e) = crate::scheduler::resume::refresh_descriptor(&run_dir, &final_state) {
+        tracing::warn!("F-117 resume descriptor (terminal): {e:#}");
+    }
+
     if let Err(e) = crate::scheduler::evidence::write_run_evidence(&final_state) {
         tracing::warn!("could not write run evidence: {e:#}");
     }
@@ -3352,10 +3739,21 @@ fn run_end_event_kind(cancelled: bool, final_status: RunStatus) -> RunEventKind 
     }
 }
 
+/// A workflow input that was ACTUALLY injected into the prompt, with its
+/// provenance. F-116 records refs from these real injections, never from the raw
+/// `task.inputs` table (so a missing optional / unparseable / skipped input is
+/// not falsely attributed — N1).
+struct WorkflowInput {
+    slice: MemorySlice,
+    alias: String,
+    producer: String,
+    output: String,
+}
+
 async fn load_workflow_inputs(
     task: &PlanTask,
     state: &Arc<Mutex<RunState>>,
-) -> Result<Vec<MemorySlice>> {
+) -> Result<Vec<WorkflowInput>> {
     if task.inputs.is_empty() {
         return Ok(vec![]);
     }
@@ -3395,7 +3793,7 @@ async fn load_workflow_inputs(
             .collect::<Vec<_>>()
     };
 
-    let mut slices = Vec::new();
+    let mut inputs = Vec::new();
     for (alias, producer, output, required, found) in output_paths {
         let Some(meta) = found else {
             if required {
@@ -3424,12 +3822,17 @@ async fn load_workflow_inputs(
         }
         body.push_str("---\n");
         body.push_str(&content);
-        slices.push(MemorySlice {
-            topic: format!("workflow/{producer}.{output} as {alias}"),
-            content: body,
+        inputs.push(WorkflowInput {
+            slice: MemorySlice {
+                topic: format!("workflow/{producer}.{output} as {alias}"),
+                content: body,
+            },
+            alias,
+            producer,
+            output,
         });
     }
-    Ok(slices)
+    Ok(inputs)
 }
 
 async fn capture_task_outputs(
@@ -3910,6 +4313,7 @@ async fn run_review(
         model,
         role_prelude,
         allowed_tools: crate::modes::AllowedTools::default(),
+        harden: crate::runtime_harden::Hardening::from(&projects.defaults.runtime_hardening),
     };
     let result = adapter::pick(&adapter_name).run(reviewer_task).await?;
     tracing::info!(task = %task_id, reviewer = %reviewer_role, "review completed");

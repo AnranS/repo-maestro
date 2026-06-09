@@ -24,7 +24,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/AnranS/repo-maestro/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/AnranS/repo-maestro/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://github.com/AnranS/maestro/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/AnranS/maestro/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" /></a>
   <a href="Cargo.toml"><img alt="Rust 1.82+" src="https://img.shields.io/badge/rust-1.82%2B-orange.svg?logo=rust" /></a>
   <a href="#project-status"><img alt="Status: beta" src="https://img.shields.io/badge/status-beta-yellow.svg" /></a>

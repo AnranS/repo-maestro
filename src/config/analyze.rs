@@ -715,6 +715,69 @@ fn check_size(plan: &Plan) -> Vec<Finding> {
     }]
 }
 
+/// Full F-111 `PlanPreview` for a structurally-valid plan + its analyze report
+/// (core + warnings/errors). Shared by `plan validate --json`, `work --dry --json`,
+/// and F-118 runtime health. Lives here (next to `analyze`) rather than under a CLI
+/// command so non-CLI callers (server/health) reuse it without depending on the CLI.
+pub fn plan_preview(p: &Plan, report: &AnalyzeReport) -> crate::schema::preview::PlanPreview {
+    let mut preview = plan_preview_core(p);
+    for f in &report.findings {
+        if f.is_error() {
+            preview.errors.push(f.to_issue());
+        } else {
+            preview.warnings.push(f.to_issue());
+        }
+    }
+    preview
+}
+
+/// The structural part of a `PlanPreview` — counts, `depends_on` edges, and the
+/// downstream blast radius. No findings. Single-pass, so safe even on a
+/// structurally-invalid plan.
+pub(crate) fn plan_preview_core(p: &Plan) -> crate::schema::preview::PlanPreview {
+    use crate::schema::preview::{BlastEntry, Edge, PlanPreview};
+    use std::collections::{BTreeMap, BTreeSet};
+    let projects: BTreeSet<&str> = p.tasks.iter().map(|t| t.project.as_str()).collect();
+    let edges: Vec<Edge> = p
+        .tasks
+        .iter()
+        .flat_map(|t| {
+            t.depends_on.iter().map(move |dep| Edge {
+                from: dep.clone(),
+                to: t.id.clone(),
+                kind: "depends_on".to_string(),
+            })
+        })
+        .collect();
+    let mut downstream: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for t in &p.tasks {
+        for dep in &t.depends_on {
+            downstream
+                .entry(dep.as_str())
+                .or_default()
+                .push(t.id.clone());
+        }
+    }
+    let blast_radius: Vec<BlastEntry> = p
+        .tasks
+        .iter()
+        .filter_map(|t| {
+            downstream.get(t.id.as_str()).map(|ds| BlastEntry {
+                task: t.id.clone(),
+                project: t.project.clone(),
+                downstream: ds.clone(),
+            })
+        })
+        .collect();
+    PlanPreview {
+        project_count: projects.len() as u32,
+        task_count: p.tasks.len() as u32,
+        dependency_edges: edges,
+        blast_radius,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod wire_tests {
     use super::*;

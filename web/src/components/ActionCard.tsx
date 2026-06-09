@@ -17,11 +17,11 @@ export function ActionCard({
 
   const verbColor =
     {
-      run: "text-blue-300 border-blue-500/30 bg-blue-500/5",
-      approve: "text-amber-300 border-amber-500/30 bg-amber-500/5",
+      run: "text-status-info border-blue-500/30 bg-blue-500/5",
+      approve: "text-status-warning border-amber-500/30 bg-amber-500/5",
       status: "text-ink-dim border-line bg-bg-panel",
       rerun: "text-purple-300 border-purple-500/30 bg-purple-500/5",
-      plan_validate: "text-emerald-300 border-emerald-500/30 bg-emerald-500/5",
+      plan_validate: "text-status-success border-emerald-500/30 bg-emerald-500/5",
       work: "text-orange-300 border-orange-500/30 bg-orange-500/5",
     }[action.verb] || "text-ink-dim border-line bg-bg-panel"
 
@@ -40,7 +40,7 @@ export function ActionCard({
             <>
               <button
                 onClick={() => onDecide("approve")}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 border border-emerald-500/30"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium bg-emerald-500/20 hover:bg-emerald-500/30 text-status-success border border-emerald-500/30"
               >
                 <Play size={11} /> run
               </button>
@@ -53,17 +53,17 @@ export function ActionCard({
             </>
           )}
           {status === "running" && (
-            <span className="inline-flex items-center gap-1 text-xs text-blue-300">
+            <span className="inline-flex items-center gap-1 text-xs text-status-info">
               <Loader2 size={11} className="animate-spin" /> running…
             </span>
           )}
           {status === "done" && (
-            <span className="inline-flex items-center gap-1 text-xs text-emerald-300">
+            <span className="inline-flex items-center gap-1 text-xs text-status-success">
               <Check size={11} /> done
             </span>
           )}
           {status === "failed" && (
-            <span className="inline-flex items-center gap-1 text-xs text-red-300">
+            <span className="inline-flex items-center gap-1 text-xs text-status-danger">
               <AlertTriangle size={11} /> failed
             </span>
           )}

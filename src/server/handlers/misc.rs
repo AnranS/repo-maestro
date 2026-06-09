@@ -21,6 +21,14 @@ pub async fn defaults_get() -> Response {
     }
 }
 
+/// `GET /api/providers/profiles` — read-only per-provider enforcement matrix (F-136a2).
+/// Projects `provider_permission_profile` so the Settings "Providers" block shows the
+/// honest hard/soft/advisory boundary without a drifting hand-copy in TS. No behavior,
+/// no settings, no query params (unknown providers are covered by a Rust unit test).
+pub async fn provider_profiles() -> Response {
+    Json(crate::schema::permissions::provider_enforcement_profiles()).into_response()
+}
+
 #[derive(serde::Deserialize)]
 pub struct DefaultsPut {
     #[serde(default)]
@@ -117,6 +125,58 @@ pub async fn memory_graph() -> Response {
     match crate::memory::graph::build_from(&l2_root, cfg.as_ref()) {
         Ok(g) => Json(&g).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    }
+}
+
+/// F-118: read-only local runtime readiness (`maestro.runtime_health.v1`). The
+/// report is validated BEFORE it is serialized, so a self-inconsistent report
+/// becomes a 500 rather than half-structured JSON. It carries no absolute path,
+/// env value, or provider stdout/stderr — only verdicts + symbolic refs. Powers
+/// the Dashboard's six readiness rows.
+pub async fn runtime_health() -> Response {
+    let generated_at = chrono::Utc::now().to_rfc3339();
+    runtime_health_response(crate::runtime_health::build_validated_report(generated_at).await)
+}
+
+/// Map a built report (or its validation error) to a response. Split out so the
+/// 500 path is unit-testable: the validator's error text can quote a REJECTED
+/// message / ref / path, so it must never reach the HTTP body — we log it
+/// server-side and return a fixed neutral string instead.
+fn runtime_health_response(
+    result: anyhow::Result<crate::schema::runtime_health::RuntimeHealthReport>,
+) -> Response {
+    match result {
+        Ok(report) => Json(&report).into_response(),
+        Err(e) => {
+            tracing::warn!(error = ?e, "runtime health report failed validation");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "runtime health report failed validation",
+            )
+                .into_response()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    #[tokio::test]
+    async fn runtime_health_500_body_never_carries_raw_error_detail() {
+        // an error that quotes a rejected path/ref/message must not reach the body.
+        let leaky = anyhow::anyhow!(
+            "health ref \"/opt/secret/.maestro\" rejected; message at /opt/x has MAESTRO_CODEX"
+        );
+        let resp = runtime_health_response(Err(leaky));
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert_eq!(body, "runtime health report failed validation");
+        for leak in ["/opt/secret", "/opt/x", "MAESTRO_CODEX", "rejected"] {
+            assert!(!body.contains(leak), "500 body leaked {leak:?}: {body}");
+        }
     }
 }
 

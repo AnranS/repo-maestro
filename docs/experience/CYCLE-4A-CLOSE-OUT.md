@@ -65,7 +65,7 @@ Three new unit tests were added in this commit, all green pre-push:
 
 CI post-push verification:
 
-- `7f3751d` — run [`26384872757`](https://github.com/AnranS/repo-maestro/actions/runs/26384872757) ✅ (rust stable 2m23s + web 51s)
+- `7f3751d` — run [`26384872757`](https://github.com/AnranS/maestro/actions/runs/26384872757) ✅ (rust stable 2m23s + web 51s)
 
 ## Methodology Notes
 

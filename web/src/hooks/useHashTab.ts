@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react"
 
 export type Tab =
+  | "dashboard"
   | "chat"
   | "tasks"
   | "context"
   | "memory"
   | "architecture"
   | "codegraph"
+  | "deliveries"
   | "docs"
 
 /**
@@ -16,17 +18,20 @@ export type Tab =
 export function tabFromHash(hash: string): Tab {
   const h = hash.replace(/^#/, "")
   if (
+    h === "dashboard" ||
     h === "tasks" ||
     h === "context" ||
     h === "memory" ||
     h === "architecture" ||
     h === "codegraph" ||
+    h === "deliveries" ||
     h === "chat"
   ) {
     return h
   }
   if (h === "docs" || h.startsWith("docs/")) return "docs"
-  return "chat"
+  // F-UI-001: operator-first — the dashboard is the default landing.
+  return "dashboard"
 }
 
 /**

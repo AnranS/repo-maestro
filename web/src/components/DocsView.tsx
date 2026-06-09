@@ -68,7 +68,7 @@ export function DocsView() {
 
   if (err && !index) {
     return (
-      <div className="flex-1 flex items-center justify-center text-sm text-red-300 p-6">
+      <div className="flex-1 flex items-center justify-center text-sm text-status-danger p-6">
         {err}
       </div>
     )
@@ -108,7 +108,7 @@ export function DocsView() {
         <div ref={bodyScrollRef} className="flex-1 overflow-y-auto scrollbar-thin">
           <article className="max-w-3xl mx-auto px-8 py-8 prose-chat">
             {loading && <p className="text-ink-faint">{t("docs.loading")}</p>}
-            {err && <p className="text-red-300">{err}</p>}
+            {err && <p className="text-status-danger">{err}</p>}
             {!loading && !err && (
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
@@ -223,7 +223,7 @@ function DocsSidebar({
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
             placeholder={t("docs.filter")}
-            className="w-full bg-bg-inset border border-line rounded text-xs pl-6 pr-2 py-1 focus:outline-none focus:border-blue-600 placeholder:text-ink-faint"
+            className="w-full bg-bg-inset border border-line rounded text-xs pl-6 pr-2 py-1 focus:outline-none focus:border-accent placeholder:text-ink-faint"
           />
         </div>
       </div>
@@ -246,7 +246,7 @@ function DocsSidebar({
                       onClick={() => onPick(p.id)}
                       className={`w-full text-left px-3 py-1.5 text-[12.5px] truncate ${
                         active
-                          ? "bg-blue-600/10 text-blue-300 border-l-2 border-blue-500 pl-[10px]"
+                          ? "bg-blue-600/10 text-accent border-l-2 border-blue-500 pl-[10px]"
                           : "text-ink-dim hover:text-ink hover:bg-bg-hover/70"
                       }`}
                     >

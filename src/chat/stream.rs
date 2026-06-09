@@ -44,83 +44,41 @@ pub enum StreamEvent {
 }
 
 /// Run a turn against the given session. Persists the user message + the final
-/// assistant message. Emits StreamEvents over the channel as they arrive.
+/// assistant message and emits StreamEvents as they arrive. Returns when the
+/// provider process exits.
 ///
-/// Returns when the cursor-agent process exits.
-pub async fn send_streaming(
-    session: Session,
-    user_text: String,
-    tx: mpsc::Sender<StreamEvent>,
-) -> Result<()> {
-    send_streaming_with_model(session, user_text, None, tx).await
-}
-
-/// Like `send_streaming` but with an optional per-call model override that
-/// takes priority over the session's pinned model and the global default.
-pub async fn send_streaming_with_model(
-    session: Session,
-    user_text: String,
-    model_override: Option<String>,
-    tx: mpsc::Sender<StreamEvent>,
-) -> Result<()> {
-    send_streaming_with_options(session, user_text, model_override, None, tx).await
-}
-
+/// F-119: this is the lower turn function — it must be reached ONLY through
+/// `chat::turn::start_chat_turn` (which holds the busy-ownership guard) or from
+/// tests; never call it directly from a new entrypoint. `mode` feeds the reuse
+/// signature; provider-session reuse (cursor `--resume`) is gated on a signature
+/// match so a drifted local context opens a fresh provider session.
+// Cohesive lower-level turn function reached only through the guard wrapper; the
+// arguments are the turn's inputs (session, text, model/provider/mode, the persisted
+// message ids, and the event channel), not worth a one-off params struct.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_streaming_with_options(
     mut session: Session,
     user_text: String,
     model_override: Option<String>,
     provider_override: Option<String>,
+    mode: crate::schema::session_control::SessionMode,
+    user_message_id: String,
+    assistant_message_id: String,
     tx: mpsc::Sender<StreamEvent>,
 ) -> Result<()> {
     let is_first = session.messages.is_empty();
-    let user_msg = Message::new(Role::User, user_text.clone());
+    // F-119 Step 4: use the wrapper-provided message ids so the turn receipt can
+    // point at the exact persisted user + assistant messages (for first-turn dedup
+    // and done-replay).
+    let mut user_msg = Message::new(Role::User, user_text.clone());
+    user_msg.id = user_message_id;
     session.messages.push(user_msg);
     update_title_from_first_message(&mut session, &user_text);
     save(&session)?;
 
-    // Build the prompt that actually goes to cursor-agent.
-    let projects = load_projects_safe();
-    let topics = list_memory_topics_safe();
-    let skills = crate::skills::index_all();
-    let status_snippet = render_status_snippet().unwrap_or_default();
-    let triggered = trigger_inject(&user_text);
-    let prompt = if is_first {
-        format!(
-            "{}\n\n{}\n{}\n# Your turn\n\n{}",
-            render_system_prelude(&projects, &topics, &skills),
-            status_snippet,
-            triggered,
-            user_text
-        )
-    } else {
-        // For follow-up turns, still refresh the live status block AND a
-        // compact workspace recap so the model doesn't hallucinate project
-        // names. Providers that resume their own session (cursor-agent
-        // --resume) effectively re-see the turn-1 prelude, but providers
-        // that don't (claude --print) get a fresh process every turn and
-        // need at least the project registry restated. The recap is much
-        // smaller than the full prelude (~3KB for 65 projects vs ~12KB)
-        // so prompt caching still wins.
-        format!(
-            "{}\n{}\n{}\n{}",
-            status_snippet,
-            render_workspace_recap(&projects),
-            triggered,
-            user_text
-        )
-    };
-
-    let assistant_msg = Message::new(Role::Assistant, String::new());
-    let assistant_msg_id = assistant_msg.id.clone();
-    let session_id_for_meta = session.id.clone();
-    tx.send(StreamEvent::Meta {
-        message_id: assistant_msg_id.clone(),
-        session_id: session_id_for_meta,
-    })
-    .await
-    .ok();
-
+    // Resolve the provider + effective model BEFORE the reuse decision and prompt
+    // assembly, so a signature drift changes BOTH the provider session id and the
+    // prompt shape — a reopened provider session must get the full prelude, not a recap.
     let provider_id = provider_override
         .filter(|p| !p.trim().is_empty())
         .or_else(|| {
@@ -154,6 +112,52 @@ pub async fn send_streaming_with_options(
                 .effective_agent_model()
                 .map(str::to_string)
         });
+
+    // F-119: gate provider-session reuse on a reuse-signature match. On drift, forget
+    // the old provider session AND persist that to disk NOW (N2) — so a provider
+    // failure can't leave a stale cursor_chat_id that a later same-signature turn
+    // would wrongly reuse. `status_snippet` / run state are excluded from the signature.
+    let signature = crate::chat::signature::compute_session_signature(
+        provider.id(),
+        effective_model.as_deref(),
+        mode,
+        &chrono::Utc::now().to_rfc3339(),
+    );
+    let reuse = crate::chat::control::update_signature_and_decide_reuse(
+        &session.id,
+        signature,
+        &chrono::Utc::now().to_rfc3339(),
+    )
+    .unwrap_or(false);
+    persist_drift_clear(&mut session, provider.id(), reuse)?;
+
+    // A (re)opened provider session has no memory of turn 1 → send the full system
+    // prelude, not the compact recap (which stateless providers keep as a size
+    // tradeoff). `has_provider_session` reflects the cursor id AFTER the drift-clear.
+    let full_prelude = use_full_prelude(is_first, provider.id(), session.cursor_chat_id.is_some());
+
+    let projects = load_projects_safe();
+    let topics = list_memory_topics_safe();
+    let skills = crate::skills::index_all();
+    let status_snippet = render_status_snippet().unwrap_or_default();
+    let triggered = trigger_inject(&user_text);
+    let prompt = build_turn_prompt(
+        full_prelude,
+        &projects,
+        &topics,
+        &skills,
+        &status_snippet,
+        &triggered,
+        &user_text,
+    );
+
+    let assistant_msg_id = assistant_message_id;
+    tx.send(StreamEvent::Meta {
+        message_id: assistant_msg_id.clone(),
+        session_id: session.id.clone(),
+    })
+    .await
+    .ok();
 
     let response = provider
         .stream(
@@ -203,7 +207,54 @@ pub async fn send_streaming_with_options(
     Ok(())
 }
 
-fn load_projects_safe() -> ProjectsConfig {
+/// First turn, OR a cursor session that will not resume (drift / fresh), gets the
+/// full system prelude (project registry + action protocol + skills); a resuming
+/// cursor session — and stateless providers — get the compact recap.
+fn use_full_prelude(is_first: bool, provider_id: &str, has_provider_session: bool) -> bool {
+    is_first || (provider_id == "cursor" && !has_provider_session)
+}
+
+/// On a cursor signature drift, forget the old provider session AND persist that to
+/// disk immediately — so even if the provider call then fails, no stale
+/// `cursor_chat_id` survives on disk for a later same-signature turn to wrongly reuse.
+fn persist_drift_clear(session: &mut Session, provider_id: &str, reuse: bool) -> Result<()> {
+    if provider_id == "cursor" && !reuse && session.cursor_chat_id.is_some() {
+        session.cursor_chat_id = None;
+        save(session)?;
+    }
+    Ok(())
+}
+
+/// Assemble the turn prompt: full system prelude vs compact workspace recap.
+fn build_turn_prompt(
+    full_prelude: bool,
+    projects: &ProjectsConfig,
+    topics: &[String],
+    skills: &[crate::skills::SkillSummary],
+    status_snippet: &str,
+    triggered: &str,
+    user_text: &str,
+) -> String {
+    if full_prelude {
+        format!(
+            "{}\n\n{}\n{}\n# Your turn\n\n{}",
+            render_system_prelude(projects, topics, skills),
+            status_snippet,
+            triggered,
+            user_text
+        )
+    } else {
+        format!(
+            "{}\n{}\n{}\n{}",
+            status_snippet,
+            render_workspace_recap(projects),
+            triggered,
+            user_text
+        )
+    }
+}
+
+pub(crate) fn load_projects_safe() -> ProjectsConfig {
     paths::projects_file()
         .ok()
         .and_then(|p| if p.exists() { Some(p) } else { None })
@@ -215,7 +266,7 @@ fn load_projects_safe() -> ProjectsConfig {
         })
 }
 
-fn list_memory_topics_safe() -> Vec<String> {
+pub(crate) fn list_memory_topics_safe() -> Vec<String> {
     MemoryStore::open()
         .and_then(|s| s.list_l1())
         .map(|m| m.into_keys().collect())
@@ -625,5 +676,73 @@ mod tests {
         assert!(out.contains("proj-79"));
         assert!(!out.contains("proj-80  # backend"));
         assert!(out.contains("# … and 10 more"));
+    }
+
+    #[test]
+    fn full_prelude_only_on_first_turn_or_cursor_fresh() {
+        // N1: a cursor session that won't resume (drift / fresh) gets the full
+        // prelude even on a non-first turn; resuming cursor + stateless providers don't.
+        assert!(use_full_prelude(true, "cursor", true));
+        assert!(use_full_prelude(true, "codex", false));
+        assert!(use_full_prelude(false, "cursor", false));
+        assert!(!use_full_prelude(false, "cursor", true));
+        assert!(!use_full_prelude(false, "codex", false));
+        assert!(!use_full_prelude(false, "claude", false));
+    }
+
+    #[test]
+    fn full_prelude_prompt_carries_system_prelude_recap_does_not() {
+        // N1: the full-prelude prompt restates the whole system prelude (action
+        // contract + skills); the recap does not.
+        let projects = sample_projects(&["api"]);
+        let prelude = render_system_prelude(&projects, &[], &[]);
+        let full = build_turn_prompt(true, &projects, &[], &[], "status", "trig", "hello");
+        let recap = build_turn_prompt(false, &projects, &[], &[], "status", "trig", "hello");
+        assert!(
+            full.contains(&prelude),
+            "full prompt must carry the system prelude"
+        );
+        assert!(
+            !recap.contains(&prelude),
+            "recap must NOT carry the full prelude"
+        );
+        assert!(full.contains("# Your turn"));
+        assert!(!recap.contains("# Your turn"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn drift_persists_cursor_clear_to_disk() {
+        // N2: a cursor drift clears cursor_chat_id ON DISK before the provider call,
+        // so a later provider failure can't leave a stale id for a same-signature
+        // turn to reuse. A reuse keeps the id.
+        let dir = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("MAESTRO_WORKSPACE_ROOT", dir.path());
+        }
+        std::fs::create_dir_all(dir.path().join(".maestro")).unwrap();
+
+        let mut drifted = Session::new();
+        drifted.cursor_chat_id = Some("old-provider-id".into());
+        save(&drifted).unwrap();
+        persist_drift_clear(&mut drifted, "cursor", false).unwrap();
+        assert!(drifted.cursor_chat_id.is_none());
+        assert!(
+            crate::chat::sessions::load(&drifted.id)
+                .unwrap()
+                .cursor_chat_id
+                .is_none(),
+            "disk must reflect the drift clear"
+        );
+
+        let mut kept = Session::new();
+        kept.cursor_chat_id = Some("keep-id".into());
+        save(&kept).unwrap();
+        persist_drift_clear(&mut kept, "cursor", true).unwrap();
+        assert_eq!(kept.cursor_chat_id.as_deref(), Some("keep-id"));
+
+        unsafe {
+            std::env::remove_var("MAESTRO_WORKSPACE_ROOT");
+        }
     }
 }

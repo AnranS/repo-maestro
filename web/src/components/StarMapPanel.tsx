@@ -288,7 +288,7 @@ export function StarMapPanel() {
 
   return (
     <div className="flex gap-3">
-      <div className="relative flex-1 overflow-hidden rounded-xl border border-line">
+      <div className="relative flex-1 overflow-hidden rounded-lg border border-line">
         <canvas ref={canvasRef} className="block w-full" style={{ height: "auto" }}
           onMouseMove={onMove} onMouseLeave={() => setHover(null)} />
 
@@ -296,7 +296,7 @@ export function StarMapPanel() {
           <div className="absolute inset-x-3 bottom-3 flex items-center gap-2 rounded-lg border border-line bg-bg-inset/85 px-3 py-2 text-[11px] backdrop-blur">
             <button
               onClick={() => { if (playing) { setPlaying(false) } else { setCutoffIdx(0); setPlaying(true) } }}
-              className="shrink-0 rounded bg-bg-hover px-2 py-1 text-ink hover:text-blue-300">
+              className="shrink-0 rounded bg-bg-hover px-2 py-1 text-ink hover:text-accent">
               {playing ? `⏸ ${t("starmap.pause")}` : `▶ ${t("starmap.play")}`}
             </button>
             <input type="range" min={0} max={times.length - 1} value={effIdx}
@@ -311,7 +311,7 @@ export function StarMapPanel() {
         )}
 
         {hover && (
-          <div className="pointer-events-none absolute left-3 top-3 max-w-xs rounded-lg border border-line bg-bg-inset/95 p-2.5 text-[11px] shadow-lg">
+          <div className="pointer-events-none absolute left-3 top-3 max-w-xs rounded-lg border border-line bg-bg-inset/95 p-2.5 text-[11px]">
             <div className="font-semibold text-ink">{hover.project}</div>
             <div className="mt-0.5 text-ink-dim">{hover.title}</div>
             <div className="mt-1 flex flex-wrap gap-2 text-ink-faint">

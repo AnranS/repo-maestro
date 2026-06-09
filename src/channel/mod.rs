@@ -21,7 +21,7 @@ pub use poll::{
 pub use route::{
     has_confirm_token, parse_action, route_inbound, RejectReason, RouteDecision, RouteError,
 };
-pub use subscribe::{handle_event, SubscribeError, OUTBOUND_REPLIES_FILE};
+pub use subscribe::{append_outbound_reply, handle_event, SubscribeError, OUTBOUND_REPLIES_FILE};
 pub use transport::{
     select_transport, BotmuxTransport, FileMockTransport, InboundMessage, Transport, TransportError,
 };

@@ -1,8 +1,11 @@
 import type {
+  AcceptVerdict,
   Action,
   AddProjectBody,
   ArchitectureView,
   CodeGraph,
+  DeliveryListEntry,
+  DeliveryView,
   CodeGraphBuildResult,
   CodeGraphEngine,
   CodeSymbol,
@@ -21,15 +24,23 @@ import type {
   MemoryIndex,
   ModelInfo,
   ProjectMemoryView,
+  ProviderEnforcementProfile,
   RunEvidence,
+  RunMonitor,
   RunOutcome,
   RunReplay,
   RunState,
+  RunStatusLite,
   RunSummary,
+  RuntimeHealthReport,
   Session,
   SessionMeta,
   Skill,
+  SkillInventory,
   SkillsByScope,
+  TaskContextManifest,
+  TaskDetail,
+  TimelineEvent,
 } from "./types"
 
 async function json<T>(r: Response): Promise<T> {
@@ -37,11 +48,64 @@ async function json<T>(r: Response): Promise<T> {
   return r.json()
 }
 
+// F-120: a stable, path-safe event-stream consumer id for this browser profile.
+// `webui-<hex>` is always path-safe (hex + a single hyphen). Two layers of
+// stability:
+//   1. localStorage-persisted id — stable across reloads (the normal case); a
+//      tampered value failing the path-safe check is regenerated, never sent.
+//   2. module-level fallback id — when localStorage is unavailable (private mode /
+//      disabled), one id is minted per page session so the browser-local consumer
+//      stays stable (and can still reuse its stored ack) instead of degrading to a
+//      fresh anonymous consumer on every Events-tab mount.
+const EVENT_CONSUMER_KEY = "maestro.eventConsumerId"
+const PATH_SAFE_ID = /^[A-Za-z0-9_-]+$/
+let fallbackEventConsumerId: string | null = null
+
+/** Path-safe `webui-<hex>`; `crypto.randomUUID` → `getRandomValues` → Math.random. */
+function makeConsumerId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `webui-${crypto.randomUUID()}`
+  }
+  const bytes = new Uint8Array(16)
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(bytes)
+  } else {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256)
+  }
+  return `webui-${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`
+}
+
+export function eventConsumerId(): string {
+  try {
+    const existing = localStorage.getItem(EVENT_CONSUMER_KEY)
+    if (existing && PATH_SAFE_ID.test(existing)) return existing
+    const fresh = makeConsumerId()
+    localStorage.setItem(EVENT_CONSUMER_KEY, fresh)
+    return fresh
+  } catch {
+    // localStorage unavailable: reuse the per-session module fallback so this page
+    // keeps ONE stable consumer id rather than a fresh one per call.
+    if (!fallbackEventConsumerId) fallbackEventConsumerId = makeConsumerId()
+    return fallbackEventConsumerId
+  }
+}
+
+/** Balanced run-event stream URL for a browser consumer (F-120). */
+export function runEventStreamUrl(runId: string, consumerId: string): string {
+  const params = new URLSearchParams({ delivery: "balanced", consumer_id: consumerId })
+  return `/api/runs/${encodeURIComponent(runId)}/events/stream?${params}`
+}
+
 export const api = {
   async state(): Promise<RunState | null> {
     const r = await fetch("/api/state")
     if (r.status === 404) return null
     return json(r)
+  },
+
+  /** F-118: read-only local runtime readiness (powers the Dashboard six rows). */
+  async runtimeHealth(): Promise<RuntimeHealthReport> {
+    return json(await fetch("/api/runtime/health"))
   },
 
   async runs(): Promise<RunSummary[]> {
@@ -56,6 +120,9 @@ export const api = {
   },
   async runFindings(id: string = "current"): Promise<Finding[]> {
     return json(await fetch(`/api/runs/${encodeURIComponent(id)}/findings`))
+  },
+  async runMonitor(id: string = "current"): Promise<RunMonitor> {
+    return json(await fetch(`/api/runs/${encodeURIComponent(id)}/monitor`))
   },
   async runReplay(id: string = "current"): Promise<RunReplay> {
     return json(await fetch(`/api/runs/${encodeURIComponent(id)}/replay`))
@@ -93,6 +160,23 @@ export const api = {
   async runOutcome(id: string): Promise<RunOutcome> {
     return json(await fetch(`/api/runs/${encodeURIComponent(id)}/outcome`))
   },
+  /**
+   * F-120: record this browser consumer's monotonic event high-water. Best-effort
+   * consumer state — a 409 (raced/backwards) or 500 must not break the live stream,
+   * so callers ignore the rejection.
+   */
+  async ackEvents(runId: string, consumerId: string, highWaterSeq: number): Promise<void> {
+    const r = await fetch(`/api/runs/${encodeURIComponent(runId)}/events/ack`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        consumer_id: consumerId,
+        high_water_seq: highWaterSeq,
+        delivery: "balanced",
+      }),
+    })
+    if (!r.ok) throw new Error(`${r.status}`)
+  },
   async taskTrajectory(runId: string, task: string): Promise<TaskTrajectory> {
     return json(
       await fetch(
@@ -106,6 +190,26 @@ export const api = {
         `/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(task)}/diff`,
       ),
     )
+  },
+  async taskDetail(runId: string, task: string): Promise<TaskDetail> {
+    return json(
+      await fetch(
+        `/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(task)}/detail`,
+      ),
+    )
+  },
+  // F-116: returns null when the task has no context manifest (e.g. verify/shell
+  // tasks, or a task that never dispatched) — the panel treats that as empty,
+  // not an error.
+  async taskContext(
+    runId: string,
+    task: string,
+  ): Promise<TaskContextManifest | null> {
+    const r = await fetch(
+      `/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(task)}/context`,
+    )
+    if (r.status === 404) return null
+    return json(r)
   },
   async mailboxAnswer(id: string, keys: string[]): Promise<MailMessage> {
     return json(
@@ -137,6 +241,105 @@ export const api = {
   },
   async memoryStarmap(): Promise<StarMap> {
     return json(await fetch("/api/memory/starmap"))
+  },
+
+  // F-128 read-only Delivery Web UI.
+  async deliveries(): Promise<DeliveryListEntry[]> {
+    return json(await fetch("/api/deliveries"))
+  },
+  async delivery(id: string): Promise<DeliveryView> {
+    return json(await fetch(`/api/deliveries/${encodeURIComponent(id)}`))
+  },
+  // F-131: slim live run status for the Delivery detail. `run` is null when there is no
+  // run (idle); a corrupt/missing linked run is a 500 (json() throws) — never silent idle.
+  async deliveryRunStatus(id: string): Promise<{ run: RunStatusLite | null }> {
+    return json(await fetch(`/api/deliveries/${encodeURIComponent(id)}/run-status`))
+  },
+  // F-132: read-only audit timeline. A corrupt delivery / audit-node inconsistency is a
+  // 500 (json() throws) — never a silent empty timeline.
+  async deliveryTimeline(id: string): Promise<{ events: TimelineEvent[] }> {
+    return json(await fetch(`/api/deliveries/${encodeURIComponent(id)}/timeline`))
+  },
+
+  // F-129 Web mutation (forward actions). confirm-spec/plan return the updated
+  // DeliveryView; run returns 202 {ok, pid} (the run executes detached).
+  async deliveryConfirmSpec(id: string, by?: string): Promise<DeliveryView> {
+    return json(
+      await fetch(`/api/deliveries/${encodeURIComponent(id)}/confirm-spec`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ by }),
+      }),
+    )
+  },
+  async deliveryPlan(id: string, by?: string): Promise<DeliveryView> {
+    return json(
+      await fetch(`/api/deliveries/${encodeURIComponent(id)}/plan`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ by }),
+      }),
+    )
+  },
+  async deliveryRun(id: string, by?: string): Promise<{ ok: boolean; pid?: number }> {
+    return json(
+      await fetch(`/api/deliveries/${encodeURIComponent(id)}/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ by }),
+      }),
+    )
+  },
+
+  // F-130 Web mutation slice 2 (accept / closeout). Both reuse the SYNC store fns
+  // and return the updated DeliveryView (the run-outcome gate is server-side).
+  async deliveryAccept(
+    id: string,
+    body: {
+      verdict: AcceptVerdict
+      by?: string
+      notes?: string
+      debt?: string[]
+      accept_failed_with_debt?: boolean
+    },
+  ): Promise<DeliveryView> {
+    return json(
+      await fetch(`/api/deliveries/${encodeURIComponent(id)}/accept`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    )
+  },
+  async deliveryCloseout(
+    id: string,
+    body: {
+      commits?: string[]
+      ci?: string[]
+      reviews?: string[]
+      doc_revisions?: string[]
+      evidence?: string[]
+      writeback?: boolean
+      by?: string
+    },
+  ): Promise<DeliveryView> {
+    return json(
+      await fetch(`/api/deliveries/${encodeURIComponent(id)}/closeout`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    )
+  },
+  // F-133: reopen a changes_requested delivery for rework (supersedes the prior round).
+  async deliveryReopen(id: string, by?: string, reason?: string): Promise<DeliveryView> {
+    return json(
+      await fetch(`/api/deliveries/${encodeURIComponent(id)}/reopen`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ by, reason }),
+      }),
+    )
   },
 
   async codegraph(): Promise<CodeGraph> {
@@ -221,6 +424,10 @@ export const api = {
   async defaults(): Promise<DefaultsConfig> {
     return json(await fetch("/api/settings/defaults"))
   },
+  // F-136a2: read-only per-provider enforcement matrix for the Settings Providers block.
+  async providerProfiles(): Promise<ProviderEnforcementProfile[]> {
+    return json(await fetch("/api/providers/profiles"))
+  },
   async updateDefaults(patch: Partial<DefaultsConfig>): Promise<DefaultsConfig> {
     return json(
       await fetch("/api/settings/defaults", {
@@ -267,6 +474,21 @@ export const api = {
   // ─── skills ───
   async skills(): Promise<SkillsByScope> {
     return json(await fetch("/api/skills"))
+  },
+  // F-121: read-only skill/profile visibility inventory (metadata only, never
+  // bodies). Returns null on 404 (unknown project/profile) so a typo'd profile
+  // is a neutral empty state, not a thrown error.
+  async skillInventory(
+    project?: string | null,
+    profile?: string | null,
+  ): Promise<SkillInventory | null> {
+    const q = new URLSearchParams()
+    if (project) q.set("project", project)
+    if (profile) q.set("profile", profile)
+    const qs = q.toString()
+    const r = await fetch(`/api/skills/inventory${qs ? `?${qs}` : ""}`)
+    if (r.status === 404) return null
+    return json(r)
   },
   async skill(scope: string, name: string): Promise<Skill> {
     return json(
@@ -427,6 +649,9 @@ export function streamMessage(
   /** `plan` = analyse-only; `exec` (default) = full agency. */
   mode?: "plan" | "exec",
   provider?: string | null,
+  /** F-119 idempotency key for this submission (a retry of the same turn must not
+   *  append the user message / first-turn prelude twice). */
+  turnId?: string,
 ): () => void {
   const abort = new AbortController()
   void (async () => {
@@ -440,6 +665,7 @@ export function streamMessage(
           model: model ?? undefined,
           mode: mode ?? undefined,
           provider: provider ?? undefined,
+          turn_id: turnId ?? undefined,
         }),
         signal: abort.signal,
       })

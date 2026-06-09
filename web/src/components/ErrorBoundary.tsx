@@ -62,7 +62,7 @@ export class ErrorBoundary extends Component<Props, State> {
     return (
       <div className="flex-1 flex items-center justify-center p-6 overflow-auto">
         <div className="max-w-xl w-full rounded-lg border border-red-500/30 bg-red-500/5 p-5">
-          <div className="flex items-center gap-2 text-red-300 text-sm font-semibold">
+          <div className="flex items-center gap-2 text-status-danger text-sm font-semibold">
             <AlertTriangle size={14} />
             Something went wrong in {label}
           </div>
@@ -86,7 +86,7 @@ export class ErrorBoundary extends Component<Props, State> {
             >
               {copied ? (
                 <>
-                  <Check size={11} className="text-emerald-300" /> copied
+                  <Check size={11} className="text-status-success" /> copied
                 </>
               ) : (
                 <>

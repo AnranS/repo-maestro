@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,6 +8,19 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <script>
+      (() => {
+        const stored = localStorage.getItem("maestro-theme")
+        const theme =
+          stored === "light" || stored === "dark"
+            ? stored
+            : window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light"
+        document.documentElement.dataset.theme = theme
+        document.documentElement.classList.toggle("dark", theme === "dark")
+      })()
+    </script>
     <title>maestro · multi-project AI agent orchestrator</title>
   </head>
   <body class="bg-bg text-ink antialiased">

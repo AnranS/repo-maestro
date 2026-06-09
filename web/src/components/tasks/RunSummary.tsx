@@ -12,6 +12,7 @@ import {
 } from "lucide-react"
 import type { AutoAction, RunState, TaskState } from "../../types"
 import { t } from "../../i18n"
+import { CollapsibleSection } from "../ui/CollapsibleSection"
 
 /** Derive the per-status tallies + headline labels the summary strip renders. */
 export function taskSummary(tasks: TaskState[], state: RunState) {
@@ -104,10 +105,10 @@ function SummaryTile({
   progress?: number
 }) {
   const toneClass = {
-    blue: "text-blue-300 bg-blue-500/10 border-blue-500/25",
-    emerald: "text-emerald-300 bg-emerald-500/10 border-emerald-500/25",
-    amber: "text-amber-300 bg-amber-500/10 border-amber-500/25",
-    red: "text-red-300 bg-red-500/10 border-red-500/25",
+    blue: "text-status-info bg-blue-500/10 border-blue-500/25",
+    emerald: "text-status-success bg-emerald-500/10 border-emerald-500/25",
+    amber: "text-status-warning bg-amber-500/10 border-amber-500/25",
+    red: "text-status-danger bg-red-500/10 border-red-500/25",
   }[tone]
   const barClass = {
     blue: "bg-blue-400",
@@ -183,19 +184,18 @@ export function CostPanel({ state }: { state: RunState }) {
       : "bg-blue-400"
   const max = Math.max(1, ...rows.map((r) => r.tokens))
   return (
-    <section className="rounded-lg border border-line bg-bg-panel p-3">
-      <div className="mb-2 flex items-center gap-2">
-        <span className="inline-flex h-5 w-5 items-center justify-center rounded border border-blue-500/25 bg-blue-500/10 text-blue-300">
+    <CollapsibleSection
+      title={t("cost.title")}
+      icon={
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded border border-blue-500/25 bg-blue-500/10 text-status-info">
           <Coins size={12} />
         </span>
-        <span className="text-[10px] uppercase tracking-wider text-ink-faint">
-          {t("cost.title")}
-        </span>
-        <span className="text-sm font-semibold text-ink">{fmtTokens(totalTokens)}</span>
-        <span className="text-[11px] text-ink-mute">{t("cost.tokens")}</span>
-        {totalCost > 0 && (
-          <span className="text-[11px] text-ink-mute">· ${totalCost.toFixed(2)}</span>
-        )}
+      }
+      summary={`${fmtTokens(totalTokens)} ${t("cost.tokens")}${totalCost > 0 ? ` · $${totalCost.toFixed(2)}` : ""}`}
+      defaultOpen={over || (pct != null && pct >= 80)}
+    >
+      <div className="p-3">
+      <div className="mb-2 flex items-center">
         <div className="ml-auto flex items-center rounded-lg border border-line bg-bg-inset p-0.5">
           {(["project", "agent"] as const).map((k) => (
             <button
@@ -211,10 +211,10 @@ export function CostPanel({ state }: { state: RunState }) {
       {budget != null && (
         <div className="mb-3">
           <div className="mb-1 flex items-center justify-between text-[11px]">
-            <span className={over ? "text-red-300" : "text-ink-mute"}>
+            <span className={over ? "text-status-danger" : "text-ink-mute"}>
               {t("cost.budget", { used: fmtTokens(totalTokens), budget: fmtTokens(budget) })}
             </span>
-            <span className={over ? "text-red-300 font-medium" : "text-ink-faint"}>{pct}%</span>
+            <span className={over ? "text-status-danger font-medium" : "text-ink-faint"}>{pct}%</span>
           </div>
           <div className="h-1.5 overflow-hidden rounded-full bg-bg-inset">
             <div className={`h-full rounded-full ${barColor}`} style={{ width: `${pct}%` }} />
@@ -244,7 +244,8 @@ export function CostPanel({ state }: { state: RunState }) {
           </li>
         ))}
       </ul>
-    </section>
+      </div>
+    </CollapsibleSection>
   )
 }
 
@@ -281,18 +282,16 @@ export function AutoActionsPanel({ actions }: { actions?: AutoAction[] }) {
     (a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99),
   )
   const toneClass = {
-    blue: "text-blue-300 bg-blue-500/10 border-blue-500/25",
-    amber: "text-amber-300 bg-amber-500/10 border-amber-500/25",
-    red: "text-red-300 bg-red-500/10 border-red-500/25",
+    blue: "text-status-info bg-blue-500/10 border-blue-500/25",
+    amber: "text-status-warning bg-amber-500/10 border-amber-500/25",
+    red: "text-status-danger bg-red-500/10 border-red-500/25",
   }
   return (
-    <section className="rounded-lg border border-line bg-bg-panel p-3">
-      <div className="mb-2 flex items-center gap-2">
-        <span className="text-[10px] uppercase tracking-wider text-ink-faint">
-          {t("tasks.autoActionsTitle")}
-        </span>
-        <span className="text-[11px] text-ink-mute">{t("tasks.autoActionsHint")}</span>
-      </div>
+    <CollapsibleSection
+      title={t("tasks.autoActionsTitle")}
+      summary={t("tasks.autoActionsHint")}
+    >
+      <div className="p-3">
       <ul className="space-y-1.5">
         {kinds.flatMap((kind) => {
           const meta = AUTO_ACTION_META[kind] ?? {
@@ -315,15 +314,16 @@ export function AutoActionsPanel({ actions }: { actions?: AutoAction[] }) {
           ))
         })}
       </ul>
-    </section>
+      </div>
+    </CollapsibleSection>
   )
 }
 
 export function StatusPill({ status }: { status: string }) {
   const cls = {
-    running: "border-blue-500/30 bg-blue-500/10 text-blue-300",
-    done: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
-    failed: "border-red-500/30 bg-red-500/10 text-red-300",
+    running: "border-blue-500/30 bg-blue-500/10 text-status-info",
+    done: "border-emerald-500/30 bg-emerald-500/10 text-status-success",
+    failed: "border-red-500/30 bg-red-500/10 text-status-danger",
     cancelled: "border-line bg-bg-inset text-ink-dim",
   }[status] ?? "border-line bg-bg-inset text-ink-dim"
   return (

@@ -3,6 +3,8 @@ import { ArrowRight, CheckCircle2, Circle, HelpCircle, Inbox, MessagesSquare } f
 import type { MailMessage } from "../../types"
 import { api } from "../../api"
 import { t } from "../../i18n"
+import { statusTextColor, statusToken } from "../ui/StatusChip"
+import { CollapsibleSection } from "../ui/CollapsibleSection"
 import { DiscussionThread, isDiscussion } from "./DiscussionThread"
 
 /**
@@ -40,25 +42,28 @@ export function CoordinationPanel({ refreshKey }: { refreshKey?: string | number
   const coordination = messages.filter((m) => !isDiscussion(m))
 
   return (
-    <section data-pane="coordination" className="bg-bg-panel border border-line rounded-xl">
-      <div className="px-4 py-2.5 border-b border-line flex items-center justify-between">
-        <span className="text-xs uppercase tracking-wider text-ink-faint flex items-center gap-1.5">
-          {discussion.length > 0 ? <MessagesSquare size={12} /> : <Inbox size={12} />}
-          {discussion.length > 0 ? t("discussion.title") : t("tasks.coordination")}
-        </span>
-        <span className="text-xs text-ink-faint">
-          {t("tasks.coordinationCount", { open, total: messages.length })}
-        </span>
+    <CollapsibleSection
+      title={discussion.length > 0 ? t("discussion.title") : t("tasks.coordination")}
+      icon={
+        discussion.length > 0 ? (
+          <MessagesSquare size={12} className="shrink-0 text-ink-faint" />
+        ) : (
+          <Inbox size={12} className="shrink-0 text-ink-faint" />
+        )
+      }
+      summary={t("tasks.coordinationCount", { open, total: messages.length })}
+    >
+      <div data-pane="coordination">
+        {discussion.length > 0 && <DiscussionThread messages={discussion} />}
+        {coordination.length > 0 && (
+          <div className="divide-y divide-line/40">
+            {coordination.slice(0, 12).map((m) => (
+              <MailRow key={m.id} message={m} onAnswered={() => setLocalBump((n) => n + 1)} />
+            ))}
+          </div>
+        )}
       </div>
-      {discussion.length > 0 && <DiscussionThread messages={discussion} />}
-      {coordination.length > 0 && (
-        <div className="divide-y divide-line/40 border-t border-line/40">
-          {coordination.slice(0, 12).map((m) => (
-            <MailRow key={m.id} message={m} onAnswered={() => setLocalBump((n) => n + 1)} />
-          ))}
-        </div>
-      )}
-    </section>
+    </CollapsibleSection>
   )
 }
 
@@ -69,17 +74,21 @@ function MailRow({ message, onAnswered }: { message: MailMessage; onAnswered: ()
     <div className="px-4 py-2.5 flex items-start gap-3">
       <span className="mt-0.5 shrink-0" title={message.status}>
         {resolved ? (
-          <CheckCircle2 size={13} className="text-emerald-400" />
+          <CheckCircle2 size={13} className={statusTextColor("done")} />
         ) : message.ask ? (
-          <HelpCircle size={13} className="text-blue-400" />
+          <HelpCircle size={13} className={statusTextColor("running")} />
         ) : (
-          <Circle size={13} className="text-amber-400" />
+          <Circle size={13} className={statusTextColor("blocked")} />
         )}
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 text-xs">
           {message.blocking && !resolved && (
-            <span className="shrink-0 rounded border border-red-500/40 bg-red-500/15 px-1 text-[9px] font-semibold uppercase tracking-wider text-red-300">
+            <span
+              className={`shrink-0 rounded px-1 text-[9px] font-semibold uppercase tracking-wider ${
+                statusToken("failed").chip
+              }`}
+            >
               blocking
             </span>
           )}
@@ -94,7 +103,7 @@ function MailRow({ message, onAnswered }: { message: MailMessage; onAnswered: ()
         </div>
         {askable && <AskButtons message={message} onAnswered={onAnswered} />}
         {resolved && message.answer && message.answer.length > 0 && (
-          <div className="mt-1 text-[10px] text-emerald-300/90">
+          <div className="mt-1 text-[10px] text-status-success/90">
             ✓ {message.ask
               ? message.answer
                   .map((k) => message.ask!.options.find((o) => o.key === k)?.label ?? k)
@@ -137,7 +146,7 @@ function AskButtons({ message, onAnswered }: { message: MailMessage; onAnswered:
             onClick={() => submit([o.key])}
             className={`rounded-md border px-2 py-1 text-[11px] disabled:opacity-50 ${
               ask.default?.includes(o.key)
-                ? "border-blue-500/50 bg-blue-500/10 text-blue-200"
+                ? "border-blue-500/50 bg-blue-500/10 text-accent"
                 : "border-line text-ink-dim hover:bg-bg-hover"
             }`}
           >
@@ -160,7 +169,7 @@ function AskButtons({ message, onAnswered }: { message: MailMessage; onAnswered:
           onClick={() => toggle(o.key)}
           className={`rounded-md border px-2 py-1 text-[11px] disabled:opacity-50 ${
             picked.includes(o.key)
-              ? "border-blue-500/50 bg-blue-500/15 text-blue-200"
+              ? "border-blue-500/50 bg-blue-500/15 text-accent"
               : "border-line text-ink-dim hover:bg-bg-hover"
           }`}
         >

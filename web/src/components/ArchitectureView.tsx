@@ -102,7 +102,7 @@ function ModuleNode({ data }: NodeProps<Node<ModuleNodeData>>) {
       // Locking width AND height keeps dagre's declared box and the actual DOM
       // box identical — required for clean straight edges in LR layouts.
       style={{ width: NODE_W, height: NODE_H, borderLeftColor: accent }}
-      className="group rounded-xl border border-l-[3px] border-line bg-bg-panel shadow-sm px-3 py-2.5 hover:border-line-soft transition-colors relative overflow-hidden"
+      className="graph-node group relative overflow-hidden rounded-lg border border-l-[3px] border-line px-3 py-2.5 transition-colors hover:border-line-soft"
     >
       <Handle
         type="target"
@@ -117,7 +117,7 @@ function ModuleNode({ data }: NodeProps<Node<ModuleNodeData>>) {
             data.onDelete(m.name)
           }
         }}
-        className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 p-1 rounded text-ink-faint hover:text-red-300 hover:bg-red-500/10 transition"
+        className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 p-1 rounded text-ink-faint hover:text-status-danger hover:bg-red-500/10 transition"
         title="remove from projects.yaml"
       >
         <Trash2 size={11} />
@@ -414,11 +414,11 @@ export function ArchitectureView() {
         label: edgeLabel(e),
         labelStyle: {
           fontSize: 10,
-          fill: "#cbd5e1",
+          fill: GRAPH_CANVAS.labelFg,
           fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
         },
         labelShowBg: true,
-        labelBgStyle: { fill: "#111111", fillOpacity: 1 },
+        labelBgStyle: { fill: GRAPH_CANVAS.labelBg, fillOpacity: 1 },
         labelBgPadding: [6, 8],
         labelBgBorderRadius: 4,
         // Dash source-inferred edges so "guessed from imports" reads distinctly
@@ -447,7 +447,7 @@ export function ArchitectureView() {
 
   if (err) {
     return (
-      <div className="flex-1 flex items-center justify-center text-sm text-red-300 p-6">
+      <div className="flex-1 flex items-center justify-center text-sm text-status-danger p-6">
         {err}
       </div>
     )
@@ -528,7 +528,7 @@ export function ArchitectureView() {
           </button>
         </header>
 
-        <div className="flex-1 min-h-0 arch-flow">
+        <div className="graph-canvas flex-1 min-h-0 arch-flow">
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -609,7 +609,7 @@ function LegendMenu() {
         legend <ChevronDown size={11} />
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-20 mt-2 w-64 rounded-lg border border-line bg-bg-panel p-3 text-xs text-ink-dim shadow-2xl">
+        <div className="absolute right-0 top-full z-dropdown mt-2 w-64 rounded-lg border border-line bg-bg-panel p-3 text-xs text-ink-dim shadow-overlay">
           <div className="mb-2 text-[10px] uppercase tracking-wider text-ink-faint">types</div>
           <div className="grid grid-cols-2 gap-2">
             {types.map(({ key, label, color, icon }) => (

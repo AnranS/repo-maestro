@@ -23,6 +23,7 @@ use tokio_stream::StreamExt as _;
 use crate::paths;
 
 use handlers::chat;
+use handlers::deliveries;
 use handlers::fs;
 use handlers::misc;
 use handlers::projects;
@@ -47,6 +48,51 @@ pub fn build_app(st: ServerState) -> Router {
         .route("/api/state", get(runs::state_handler))
         .route("/api/runs", get(runs::runs_handler))
         .route("/api/runs/:id", get(runs::run_handler))
+        // F-128 read-only Delivery Web UI
+        .route("/api/deliveries", get(deliveries::deliveries_list))
+        .route("/api/deliveries/:id", get(deliveries::delivery_get))
+        // F-131: slim live run status for the Delivery detail
+        .route(
+            "/api/deliveries/:id/run-status",
+            get(deliveries::delivery_run_status),
+        )
+        // F-132: read-only Delivery audit timeline
+        .route(
+            "/api/deliveries/:id/timeline",
+            get(deliveries::delivery_timeline),
+        )
+        // F-129 Web mutation (forward actions: confirm-spec / plan / run)
+        .route(
+            "/api/deliveries/:id/confirm-spec",
+            axum::routing::post(deliveries::delivery_confirm_spec),
+        )
+        .route(
+            "/api/deliveries/:id/plan",
+            axum::routing::post(deliveries::delivery_plan),
+        )
+        .route(
+            "/api/deliveries/:id/run",
+            axum::routing::post(deliveries::delivery_run),
+        )
+        // F-130 Web mutation (accept / closeout)
+        .route(
+            "/api/deliveries/:id/accept",
+            axum::routing::post(deliveries::delivery_accept),
+        )
+        .route(
+            "/api/deliveries/:id/closeout",
+            axum::routing::post(deliveries::delivery_closeout),
+        )
+        // F-133: reopen a changes_requested delivery for rework
+        .route(
+            "/api/deliveries/:id/reopen",
+            axum::routing::post(deliveries::delivery_reopen),
+        )
+        // F-134: external drainer callback — record the Feishu write-back receipt
+        .route(
+            "/api/deliveries/:id/writeback-receipt",
+            axum::routing::post(deliveries::delivery_writeback_receipt),
+        )
         .route("/api/runs/:id/evidence", get(runs::run_evidence_handler))
         .route("/api/runs/:id/findings", get(runs::run_findings_handler))
         .route("/api/runs/:id/monitor", get(runs::run_monitor_handler))
@@ -55,8 +101,16 @@ pub fn build_app(st: ServerState) -> Router {
             get(runs::task_detail_handler),
         )
         .route(
+            "/api/runs/:id/tasks/:task/context",
+            get(runs::task_context_handler),
+        )
+        .route(
             "/api/runs/:id/events/stream",
             get(runs::run_events_stream_handler),
+        )
+        .route(
+            "/api/runs/:id/events/ack",
+            axum::routing::post(runs::run_events_ack_handler),
         )
         .route("/api/runs/:id/replay", get(runs::run_replay_handler))
         .route("/api/runs/:id/pr-body", get(runs::run_pr_body_handler))
@@ -120,6 +174,12 @@ pub fn build_app(st: ServerState) -> Router {
         )
         // skills + memory
         .route("/api/skills", get(skills_memory::skills_list))
+        // F-121: inventory must be registered BEFORE the `:scope/:name` editor
+        // route so the single-segment `inventory` path is never read as a scope.
+        .route(
+            "/api/skills/inventory",
+            get(skills_memory::skills_inventory),
+        )
         .route(
             "/api/skills/:scope/:name",
             get(skills_memory::skill_get)
@@ -154,6 +214,8 @@ pub fn build_app(st: ServerState) -> Router {
         .route("/api/architecture", get(projects::architecture_get))
         // filesystem browse (path picker)
         .route("/api/fs/list", get(fs::fs_list_handler))
+        // F-118 local runtime readiness (Dashboard six-row data source)
+        .route("/api/runtime/health", get(misc::runtime_health))
         // models / docs / defaults
         .route("/api/models", get(misc::models_list))
         .route(
@@ -164,6 +226,8 @@ pub fn build_app(st: ServerState) -> Router {
             "/api/settings/defaults",
             get(misc::defaults_get).put(misc::defaults_put),
         )
+        // F-136a2: read-only per-provider enforcement matrix (Settings "Providers")
+        .route("/api/providers/profiles", get(misc::provider_profiles))
         .route("/api/docs/index", get(misc::docs_index_handler))
         .route("/api/docs/page", get(misc::docs_page_handler))
         // multi-agent coordination mailbox
@@ -247,6 +311,10 @@ async fn watch_state(tx: broadcast::Sender<()>) -> Result<()> {
 
     let runs = paths::runs_dir()?;
     paths::ensure_dir(&runs)?;
+    // F-131: also watch the deliveries dir so a delivery file change (stage advance,
+    // accept/closeout) pushes a refetch tick too — not just run-state changes.
+    let deliveries = paths::deliveries_dir()?;
+    paths::ensure_dir(&deliveries)?;
 
     let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
@@ -260,6 +328,7 @@ async fn watch_state(tx: broadcast::Sender<()>) -> Result<()> {
         }
     })?;
     watcher.watch(&runs, RecursiveMode::Recursive)?;
+    watcher.watch(&deliveries, RecursiveMode::Recursive)?;
 
     // hold watcher alive for the lifetime of the task
     tokio::spawn(async move {

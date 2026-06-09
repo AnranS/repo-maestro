@@ -118,14 +118,33 @@ pub async fn stream_to_stdout(
     model_override: Option<String>,
     provider_override: Option<String>,
 ) -> Result<()> {
-    use crate::chat::{stream::send_streaming_with_options, StreamEvent};
+    use crate::chat::turn::{start_chat_turn, ChatTurnRequest, TurnError};
+    use crate::chat::StreamEvent;
     use std::io::Write;
-    use tokio::sync::mpsc;
 
-    let (tx, mut rx) = mpsc::channel::<StreamEvent>(64);
-    let handle = tokio::spawn(async move {
-        send_streaming_with_options(session, text, model_override, provider_override, tx).await
-    });
+    // F-119: route the CLI chat path through the shared ownership guard so a busy
+    // session refuses instead of starting a second concurrent turn. Persist the
+    // session first so the wrapper resolves it rather than creating a new one.
+    let _ = crate::chat::sessions::save(&session);
+    let mut rx = match start_chat_turn(ChatTurnRequest {
+        session_id: Some(session.id.clone()),
+        text,
+        model: model_override,
+        provider: provider_override,
+        mode: None,
+        turn_id: None,
+    })
+    .await
+    {
+        Ok(rx) => rx,
+        Err(TurnError::Busy) => anyhow::bail!("chat session is busy in another turn or action"),
+        Err(TurnError::InvalidId) => anyhow::bail!("invalid chat session id"),
+        // the CLI sends no turn_id, so the dedup refusals don't normally occur.
+        Err(
+            TurnError::TurnRunning | TurnError::TurnPayloadMismatch | TurnError::TurnNotRetriable,
+        ) => anyhow::bail!("chat turn could not start"),
+        Err(TurnError::Internal(e)) => return Err(e),
+    };
 
     let mut stdout = std::io::stdout();
     while let Some(ev) = rx.recv().await {
@@ -160,7 +179,6 @@ pub async fn stream_to_stdout(
             }
         }
     }
-    handle.await??;
     Ok(())
 }
 

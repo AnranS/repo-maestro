@@ -37,7 +37,7 @@ export function MessageBubble({ message, streaming, onAction }: Props) {
       <div
         className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center ${
           isUser
-            ? "bg-blue-500/20 border border-blue-500/40 text-blue-300"
+            ? "bg-accent/20 border border-accent/40 text-accent"
             : "bg-bg-panel border border-line text-ink-dim"
         }`}
       >
@@ -101,8 +101,8 @@ export function MessageBubble({ message, streaming, onAction }: Props) {
                     if (lang === "maestro-action") {
                       // Hide the raw block in favor of the action card rendered separately.
                       return (
-                        <div className="my-2 px-3 py-2 rounded-md bg-blue-500/5 border border-blue-500/20 text-xs text-blue-200 font-mono">
-                          ▸ <span className="text-blue-300">maestro-action</span> — see action card below
+                        <div className="my-2 px-3 py-2 rounded-md bg-blue-500/5 border border-blue-500/20 text-xs text-status-info font-mono">
+                          ▸ <span className="text-status-info">maestro-action</span> — see action card below
                         </div>
                       )
                     }
@@ -214,7 +214,7 @@ function CodeBlock({
         >
           {copied ? (
             <>
-              <Check size={10} className="text-emerald-300" /> copied
+              <Check size={10} className="text-status-success" /> copied
             </>
           ) : (
             <>

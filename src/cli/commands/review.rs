@@ -98,6 +98,7 @@ pub async fn run(args: ReviewArgs) -> Result<()> {
         model: None,
         role_prelude: None, // already embedded inside the prompt
         allowed_tools: crate::modes::AllowedTools::default(),
+        harden: Default::default(),
     };
 
     let result = adapter

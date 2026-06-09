@@ -125,7 +125,7 @@ fn build_json_preview(args: &WorkArgs) -> Result<crate::schema::preview::PlanPre
             projects: Default::default(),
         });
     let report = config::analyze(&plan, &projects);
-    let mut preview = crate::cli::commands::plan::plan_preview(&plan, &report);
+    let mut preview = crate::config::analyze::plan_preview(&plan, &report);
     preview.goal = Some(args.spec.clone());
     // matched = projects the synthesized plan narrowed to; total = registered
     // projects. Mirrors the human "goal matched X/Y" line.

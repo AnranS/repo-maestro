@@ -118,7 +118,7 @@ export function SessionSidebar(props: {
                 onClick={() => toggleFilter(t)}
                 className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors ${
                   filter.has(t)
-                    ? "bg-blue-500/30 text-blue-200 border border-blue-500/50"
+                    ? "bg-blue-500/30 text-accent border border-blue-500/50"
                     : "bg-bg-inset text-ink-mute border border-line hover:text-ink"
                 }`}
               >
@@ -186,7 +186,7 @@ export function SessionSidebar(props: {
                       }}
                       onBlur={commitEdit}
                       autoFocus
-                      className="flex-1 bg-bg-inset border border-line rounded px-1.5 py-0.5 text-xs outline-none focus:border-blue-600"
+                      className="flex-1 bg-bg-inset border border-line rounded px-1.5 py-0.5 text-xs outline-none focus:border-accent"
                     />
                   ) : (
                     <span
@@ -252,7 +252,7 @@ export function SessionSidebar(props: {
                       <button
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={commitEdit}
-                        className="p-0.5 text-emerald-400 hover:text-emerald-300"
+                        className="p-0.5 text-status-success hover:opacity-80"
                       >
                         <Check size={10} />
                       </button>
@@ -279,7 +279,7 @@ export function SessionSidebar(props: {
                       onBlur={submitTags}
                       placeholder="space or comma separated"
                       autoFocus
-                      className="flex-1 bg-bg-inset border border-line rounded px-1.5 py-0.5 text-[11px] font-mono outline-none focus:border-blue-600"
+                      className="flex-1 bg-bg-inset border border-line rounded px-1.5 py-0.5 text-[11px] font-mono outline-none focus:border-accent"
                     />
                     <button
                       onMouseDown={(e) => e.preventDefault()}

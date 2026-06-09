@@ -57,7 +57,7 @@ export function MemoryView({ onJumpToRun }: { onJumpToRun?: (runId: string) => v
     <div className="flex-1 overflow-y-auto scrollbar-thin">
       <div className={`${mode === "list" ? "max-w-3xl" : "max-w-5xl"} mx-auto px-6 py-6`}>
         <h1 className="mb-1 flex items-center gap-2 text-base font-semibold text-ink">
-          <Brain size={16} className="text-blue-300" /> {t("tab.memory")}
+          <Brain size={16} className="text-accent" /> {t("tab.memory")}
           {agentUp !== null && (
             <span
               className="ml-1 inline-flex items-center gap-1 rounded border border-line bg-bg-inset px-1.5 py-0.5 text-[10px] font-normal text-ink-faint"
@@ -104,7 +104,7 @@ export function MemoryView({ onJumpToRun }: { onJumpToRun?: (runId: string) => v
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder={t("memory.searchPlaceholder")}
-            className="w-full rounded-lg border border-line bg-bg-inset pl-9 pr-3 py-2.5 text-sm focus:outline-none focus:border-blue-600"
+            className="w-full rounded-lg border border-line bg-bg-inset pl-9 pr-3 py-2.5 text-sm focus:outline-none focus:border-accent"
           />
         </div>
 
@@ -208,11 +208,11 @@ function MemoryDetailModal({
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-modal flex items-center justify-center bg-black/60 p-6"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-xl border border-line bg-bg-panel shadow-2xl"
+        className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-lg border border-line bg-bg-panel shadow-overlay"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start gap-3 border-b border-line px-4 py-3">
@@ -229,7 +229,7 @@ function MemoryDetailModal({
               return onJumpToRun ? (
                 <button
                   onClick={() => onJumpToRun(m[1])}
-                  className="mt-1 inline-flex items-center gap-1 rounded border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 font-mono text-[10px] text-blue-300 hover:bg-blue-500/20"
+                  className="mt-1 inline-flex items-center gap-1 rounded border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 font-mono text-[10px] text-accent hover:bg-blue-500/20"
                   title={t("memory.openRun")}
                 >
                   <ArrowUpRight size={10} /> run {m[1]}
@@ -253,7 +253,7 @@ function MemoryDetailModal({
             <button
               onClick={remove}
               disabled={busy}
-              className="rounded border border-red-500/30 bg-red-500/10 p-1 text-red-300 hover:bg-red-500/20 disabled:opacity-50"
+              className="rounded border border-red-500/30 bg-red-500/10 p-1 text-status-danger hover:bg-red-500/20 disabled:opacity-50"
               title={t("common.delete")}
             >
               <Trash2 size={13} />
@@ -270,7 +270,7 @@ function MemoryDetailModal({
             <textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              className="h-72 w-full resize-none rounded-md border border-line bg-bg-inset p-3 font-mono text-xs focus:outline-none focus:border-blue-600"
+              className="h-72 w-full resize-none rounded-md border border-line bg-bg-inset p-3 font-mono text-xs focus:outline-none focus:border-accent"
             />
           ) : (
             <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink-dim">
@@ -316,10 +316,10 @@ function MemoryCard({
 }) {
   const tone =
     hit.kind === "decision"
-      ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/10"
+      ? "text-status-success border-emerald-500/30 bg-emerald-500/10"
       : hit.kind === "fact"
-        ? "text-blue-300 border-blue-500/30 bg-blue-500/10"
-        : "text-amber-300 border-amber-500/30 bg-amber-500/10"
+        ? "text-status-info border-blue-500/30 bg-blue-500/10"
+        : "text-status-warning border-amber-500/30 bg-amber-500/10"
   const when = hit.updated_ms ? new Date(hit.updated_ms).toLocaleDateString() : ""
   return (
     <div

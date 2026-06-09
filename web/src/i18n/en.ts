@@ -15,13 +15,85 @@
  */
 export const en: Record<string, string> = {
   // Tabs
+  "tab.dashboard": "dashboard",
   "tab.chat": "chat",
   "tab.tasks": "tasks",
   "tab.context": "context",
   "tab.memory": "memory",
   "tab.architecture": "architecture",
   "tab.codegraph": "code graph",
+  "tab.deliveries": "deliveries",
   "tab.docs": "docs",
+  "deliveries.emptyTitle": "No deliveries yet",
+  "deliveries.emptyBody":
+    "Deliveries are recorded by the maestro CLI (delivery intake → … → closeout). Once one exists it appears here.",
+  "deliveries.selectOne": "Select a delivery to see its stage, linkage, and closeout.",
+  "deliveries.error": "Couldn't load deliveries",
+  "deliveries.detailError": "Couldn't load this delivery",
+  "deliveries.corrupt": "corrupt",
+  "deliveries.openRun": "open run",
+  // F-131 inline live run status
+  "deliveries.runStatus": "run",
+  "deliveries.linkedRun": "linked",
+  "deliveries.inFlight": "in flight",
+  "deliveries.runStatusUnavailable":
+    "Run status unavailable — the linked run's state is missing or corrupt (not idle).",
+  // F-132 audit timeline
+  "deliveries.timeline": "Audit timeline",
+  "deliveries.timelineEmpty": "No audit events yet.",
+  "deliveries.timelineUnavailable":
+    "Audit timeline unavailable — the record is corrupt or inconsistent (not empty).",
+  // F-133 reopen loop
+  "deliveries.round": "round {n}",
+  "deliveries.supersededRounds": "{n} prior round(s) superseded",
+  "deliveries.reopen": "Reopen for rework",
+  "deliveries.reopenAsk":
+    "Reopen this delivery? The current round is superseded (kept in history) and it resets to spec — you'll re-confirm, re-plan and re-run.",
+  // F-134 write-back receipt
+  "deliveries.writebackPending": "pending external post",
+  "deliveries.writebackMessage": "posted message",
+  "deliveries.writebackFailed": "post failed",
+  "deliveries.actions": "actions",
+  "deliveries.confirmSpec": "Confirm spec",
+  "deliveries.confirmSpecAsk": "Confirm this spec? This records the spec_confirm threshold and unlocks plan generation.",
+  "deliveries.genPlan": "Generate plan",
+  "deliveries.genPlanAsk": "Generate a PLAN from the confirmed spec?",
+  "deliveries.startRun": "Start run",
+  "deliveries.startRunAsk": "This starts a REAL run that executes the generated PLAN. Continue?",
+  "deliveries.confirmYes": "Confirm",
+  "deliveries.cancel": "Cancel",
+  "deliveries.working": "Working…",
+  // F-130 accept / closeout forms
+  "deliveries.acceptTitle": "Accept",
+  "deliveries.closeoutTitle": "Closeout",
+  "deliveries.acceptVerdict": "Verdict",
+  "deliveries.verdict.accepted": "Accepted",
+  "deliveries.verdict.partial": "Partial",
+  "deliveries.verdict.changes_requested": "Changes requested",
+  "deliveries.verdict.rejected": "Rejected",
+  "deliveries.notes": "Notes (optional)",
+  "deliveries.debt": "Debt (one per line)",
+  "deliveries.debtHint":
+    "Required to accept or partially-accept a run that did not pass acceptance.",
+  "deliveries.acceptFailedWithDebt": "Accept despite failed acceptance (records debt)",
+  "deliveries.acceptFailedWithDebtHint":
+    "Only for an unverified run — the server is the final judge.",
+  "deliveries.recordVerdict": "Record verdict",
+  "deliveries.acceptAsk": "Record this PM verdict? This writes the pm_accept threshold.",
+  "deliveries.commits": "Commits (one per line)",
+  "deliveries.ci": "CI runs (one per line)",
+  "deliveries.reviews": "Reviews (one per line)",
+  "deliveries.docRevisions": "Doc revisions (one per line)",
+  "deliveries.evidence": "Evidence refs (one per line)",
+  "deliveries.evidenceHint":
+    "Run-relative paths or http(s) URLs. Absolute / file: / .. are rejected.",
+  "deliveries.writeback": "Emit a Feishu/doc write-back intent",
+  "deliveries.needEvidence":
+    "Add at least one evidence ref (commit / ci / review / doc-revision / evidence).",
+  "deliveries.closeoutSubmit": "Close out",
+  "deliveries.closeoutAsk": "Close out this delivery?",
+  "deliveries.closeoutAskWriteback":
+    "Close out and emit a write-back intent to the source doc? maestro emits the intent — it does not post in-process.",
   "codegraph.subtitle": "File-level dependency graph from the local code index (codegraph). Click a file for its symbols.",
   "codegraph.empty": "no source files found in this workspace — open maestro from a code repo to see its graph",
   "codegraph.symbols": "symbols",
@@ -125,6 +197,8 @@ export const en: Record<string, string> = {
   "gate.outcomeTitle": "Review the outcome",
   "gate.outcomeBody": "The outcome gate — the work and acceptance checks are done; approve to accept the result, or reject to discard it.",
   "gate.taskCount": "{n} tasks",
+  "gate.projectCount": "{n} projects",
+  "gate.unavailable": "gate status unavailable",
   "gate.verified": "acceptance passed",
   "gate.notVerified": "acceptance not green",
   "gate.noChecks": "no acceptance checks",
@@ -148,6 +222,14 @@ export const en: Record<string, string> = {
   "traj.steps": "{n} steps",
   "traj.none": "no trajectory recorded",
   "traj.truncated": "truncated",
+  "context.show": "context layers",
+  "context.hide": "hide context",
+  "context.loading": "loading…",
+  "context.error": "context manifest unavailable",
+  "context.none": "no context manifest",
+  "context.layers": "{n} layers",
+  "context.truncated": "truncated",
+  "context.omitted": "omitted",
   "tasks.timeline": "timeline",
   "tasks.lanes": "lanes",
   "tasks.queued": "queued",
@@ -284,6 +366,43 @@ export const en: Record<string, string> = {
   "settings.modelsCached": "({n} cached)",
   "settings.language": "Interface language",
   "settings.languageHelp": "applies to the dashboard chrome and built-in docs.",
+  // F-136a2 — 5-block settings IA
+  "settings.blkRuntime": "Runtime & Isolation",
+  "settings.blkNetwork": "Network & Secrets",
+  "settings.blkGates": "Review Gates",
+  "settings.blkProviders": "Providers",
+  "settings.blkEvidence": "Evidence & Audit",
+  "settings.readOnly": "read-only",
+  "settings.enabled": "enabled",
+  "settings.disabled": "disabled",
+  "settings.maxParallelHelp": "max tasks running concurrently in a run.",
+  "settings.maxTotalTasks": "max_total_tasks",
+  "settings.maxTotalTasksHelp":
+    "hard ceiling on the TOTAL tasks in one run (distinct from max_parallel — concurrency). Configured in projects.yaml.",
+  "settings.isolationNote":
+    "Tasks run in isolated git worktrees today — that is the current boundary. OS/container isolation tiers (rootless containers, gVisor, microVM) are deferred to F-136c/e and are Linux-only — not available on macOS local.",
+  "settings.networkNote":
+    "No global network or secret settings yet. Egress and secrets are governed indirectly, per-task (mode) and per-provider. A default egress allowlist and a secret broker arrive in F-136d — there is no global default-deny today.",
+  "settings.gatePolicy": "gate_on_policy_violation (F-126)",
+  "settings.gatePolicyHelp":
+    "pause for approval before integration when a task's observed effects fall outside its requested tool policy.",
+  "settings.gateHighRisk": "gate_on_high_risk",
+  "settings.gateHighRiskHelp": "pause high-risk changes (contract / large blast radius) for approval.",
+  "settings.gateRefute": "refute_on_high_risk (F-106)",
+  "settings.gateRefuteHelp": "attach an adversarial refuter pass to high-risk tasks before integration.",
+  "settings.autoPr": "auto_pr",
+  "settings.autoPrHelp": "open a PR automatically on a verified run.",
+  "settings.gatesNote":
+    "Read-only here — these gates are configured in projects.yaml. Editing them from the web is a later cut.",
+  "settings.defaultAgentHelp":
+    "codex/cursor run agent tasks; shell is for verify commands; mock is for dry simulations.",
+  "settings.enforcementMatrix": "provider enforcement (read-only)",
+  "settings.matrixUnavailable":
+    "Provider enforcement matrix unavailable — couldn't load the per-provider hard/advisory boundaries. (Saving defaults still works.)",
+  "settings.matrixLegend":
+    "hard = sandbox-enforced · advisory = soft, NOT hard-blocked (the post-run policy gate is the real check) · unsupported = unknown provider (fail-closed) · n/a = not applicable.",
+  "settings.evidenceNote":
+    "Evidence and findings are kept per-run under the run directory; recent policy-gate verdicts and RuntimeProfile labels are on each task / delivery detail. No retention or export setting today.",
 
   // Path picker
   "picker.title": "Choose a folder",

@@ -1,11 +1,11 @@
 export const TASK_STATUS_COLORS = {
-  pending: "#3f3f46",
-  running: "#3b82f6",
-  done: "#10b981",
-  failed: "#ef4444",
-  awaiting_approval: "#f59e0b",
-  skipped: "#525252",
-  cancelled: "#525252",
+  pending: "#64748b",
+  running: "#2563eb",
+  done: "#059669",
+  failed: "#dc2626",
+  awaiting_approval: "#d97706",
+  skipped: "#94a3b8",
+  cancelled: "#94a3b8",
 } as const
 
 export const MODULE_TYPE_COLORS = {
@@ -32,7 +32,11 @@ export const ARCH_EDGE_COLORS = {
 } as const
 
 export const GRAPH_CANVAS = {
-  grid: "#1f1f1f",
+  grid: "rgb(var(--graph-grid))",
+  nodeBg: "rgb(var(--graph-node-bg))",
+  labelBg: "rgb(var(--graph-edge-label-bg))",
+  labelFg: "rgb(var(--graph-edge-label-fg))",
+  muted: "rgb(var(--graph-node-muted))",
   fitView: { padding: 0.16, minZoom: 0.4, maxZoom: 1.4 },
 } as const
 

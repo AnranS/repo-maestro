@@ -92,16 +92,16 @@ function classifyLine(raw: string): string {
 
   // diff content
   if (/^\+/.test(line) && !line.startsWith("+++"))
-    return "text-emerald-300/95 bg-emerald-500/[0.06]"
+    return "text-status-success/95 bg-emerald-500/[0.06]"
   if (/^-/.test(line) && !line.startsWith("---"))
-    return "text-red-300/95 bg-red-500/[0.06]"
+    return "text-status-danger/95 bg-red-500/[0.06]"
 
   // success/failure marks
-  if (/^\s*✓/.test(line)) return "text-emerald-300"
-  if (/^\s*✗/.test(line)) return "text-red-300"
-  if (/^\s*⚠/.test(line) || /WARN(ING)?/.test(line)) return "text-amber-300"
-  if (/(FAILED|ERROR|error)/.test(line)) return "text-red-300"
-  if (/(PASSED|ok\b|done)/.test(line)) return "text-emerald-200"
+  if (/^\s*✓/.test(line)) return "text-status-success"
+  if (/^\s*✗/.test(line)) return "text-status-danger"
+  if (/^\s*⚠/.test(line) || /WARN(ING)?/.test(line)) return "text-status-warning"
+  if (/(FAILED|ERROR|error)/.test(line)) return "text-status-danger"
+  if (/(PASSED|ok\b|done)/.test(line)) return "text-status-success"
 
   // section / heading conventions
   if (/^==[^=]/.test(line) || /^--[^-]/.test(line))

@@ -29,7 +29,7 @@ Requires:
 Clone, build, and run the test suite:
 
 ```bash
-git clone https://github.com/AnranS/repo-maestro.git
+git clone https://github.com/AnranS/maestro.git
 cd maestro
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings

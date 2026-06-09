@@ -128,6 +128,45 @@ pub fn provider_permission_profile(provider_id: &str) -> ResolvedPermission {
     }
 }
 
+/// The providers whose enforcement profile maestro knows (the
+/// `provider_permission_profile` match arms). The F-136a2 Settings "Providers" block
+/// projects this matrix read-only; kept next to the matrix so the two never drift.
+pub const KNOWN_PROVIDERS: [&str; 4] = ["shell", "codex", "cursor", "mock"];
+
+/// A read-only projection of one provider's per-capability `Enforcement` — the honest
+/// hard/soft/advisory matrix the Settings UI shows. `soft` is advisory (NOT
+/// hard-blocked); `unsupported` is an unknown provider (fail-closed).
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderEnforcementProfile {
+    pub provider_id: String,
+    pub shell: Enforcement,
+    pub git_write: Enforcement,
+    pub network: Enforcement,
+    pub fs_write: Enforcement,
+    pub external_dir: Enforcement,
+    pub mcp: Enforcement,
+}
+
+/// The enforcement matrix for every known provider (F-136a2). Pure projection of
+/// `provider_permission_profile` — no behavior, no new fact source.
+pub fn provider_enforcement_profiles() -> Vec<ProviderEnforcementProfile> {
+    KNOWN_PROVIDERS
+        .iter()
+        .map(|&id| {
+            let r = provider_permission_profile(id);
+            ProviderEnforcementProfile {
+                provider_id: id.to_string(),
+                shell: r.shell,
+                git_write: r.git_write,
+                network: r.network,
+                fs_write: r.fs_write,
+                external_dir: r.external_dir,
+                mcp: r.mcp,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +174,29 @@ mod tests {
     #[test]
     fn permission_schema_version_is_stable() {
         assert_eq!(PermissionEvidence::SCHEMA_VERSION, "maestro.permission.v1");
+    }
+
+    #[test]
+    fn provider_enforcement_matrix_projects_known_providers() {
+        let profiles = provider_enforcement_profiles();
+        assert_eq!(profiles.len(), KNOWN_PROVIDERS.len());
+        let codex = profiles.iter().find(|p| p.provider_id == "codex").unwrap();
+        // codex hard-enforces network/fs/external; shell/git_write are advisory (soft).
+        assert_eq!(codex.network, Enforcement::Hard);
+        assert_eq!(codex.fs_write, Enforcement::Hard);
+        assert_eq!(codex.git_write, Enforcement::Soft);
+        let shell = profiles.iter().find(|p| p.provider_id == "shell").unwrap();
+        assert_eq!(shell.shell, Enforcement::Hard);
+        assert_eq!(shell.git_write, Enforcement::Soft); // advisory, not hard
+    }
+
+    #[test]
+    fn unknown_provider_is_all_unsupported_fail_closed() {
+        // Kept a pure Rust check (not exposed via the API per F-136a2 pin 1).
+        let p = provider_permission_profile("totally-unknown");
+        assert_eq!(p.shell, Enforcement::Unsupported);
+        assert_eq!(p.network, Enforcement::Unsupported);
+        assert_eq!(p.mcp, Enforcement::Unsupported);
     }
 
     #[test]

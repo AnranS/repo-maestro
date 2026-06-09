@@ -41,7 +41,7 @@ function ProjectNode({ data }: NodeProps<Node<ProjectData>>) {
     >
       <Handle type="target" position={Position.Left} className="!w-1 !h-1 !bg-line-soft !border-0" />
       <div className="flex items-center gap-1.5">
-        <Boxes size={12} className="shrink-0 text-blue-300" />
+        <Boxes size={12} className="shrink-0 text-accent" />
         <span className="truncate text-[12px] font-medium text-ink" title={data.label}>
           {data.label}
         </span>
@@ -64,7 +64,7 @@ function RunNode({ data }: NodeProps<Node<RunData>>) {
     >
       <Handle type="target" position={Position.Left} className="!w-1 !h-1 !bg-line-soft !border-0" />
       <div className="flex items-center gap-1.5">
-        <GitCommitHorizontal size={12} className="shrink-0 text-amber-300" />
+        <GitCommitHorizontal size={12} className="shrink-0 text-status-warning" />
         <span className="truncate text-[11px] text-ink" title={data.label}>
           {data.label}
         </span>

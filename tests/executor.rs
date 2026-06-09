@@ -520,6 +520,19 @@ tasks:
         evidence["tasks"][0]["artifact_refs"][0]["kind"],
         "trajectory"
     );
+    // F-124 B1: the artifact ref path must be run-relative (real writer output),
+    // NOT the absolute on-disk trajectory_path.
+    assert_eq!(
+        evidence["tasks"][0]["artifact_refs"][0]["path"],
+        "trajectories/T_trace.ndjson"
+    );
+    let summary_ref_path = evidence["tasks"][0]["artifact_refs"][0]["path"]
+        .as_str()
+        .unwrap();
+    assert!(
+        !std::path::Path::new(summary_ref_path).is_absolute(),
+        "trajectory ref path must not be absolute: {summary_ref_path}"
+    );
 
     let manifest_path = dir
         .path()
@@ -531,6 +544,10 @@ tasks:
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(manifest_path).unwrap()).unwrap();
     assert_eq!(manifest["artifacts"][0]["kind"], "trajectory");
+    assert_eq!(
+        manifest["artifacts"][0]["path"],
+        "trajectories/T_trace.ndjson"
+    );
 
     clear_workspace();
 }
@@ -2674,5 +2691,664 @@ tasks:
         "downstream mock adapter should see the workflow input context"
     );
 
+    clear_workspace();
+}
+
+// ─── F-116 Step 2: context manifest end-to-end (N1 + N2 + privacy) ────────
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn f116_manifest_records_injected_inputs_after_setup_and_is_body_free() {
+    let dir = make_workspace();
+    ensure_dirs(dir.path(), &["api", "web"]);
+    let projects = projects_for(dir.path(), &["api", "web"]);
+
+    // T_web (agent) consumes one input that IS produced + one optional input
+    // whose (declared but never-written, non-required) output is absent at
+    // dispatch; the missing one must not appear in the manifest (N1).
+    let plan = parse_plan(
+        r#"
+spec: f116 manifest
+tasks:
+  - id: T_contract
+    project: api
+    kind: verify
+    agent: shell
+    command: "mkdir -p schemas && printf 'nickname: string\n' > schemas/openapi.yaml"
+    outputs:
+      openapi:
+        path: schemas/openapi.yaml
+      spare:
+        path: schemas/spare.yaml
+        required: false
+  - id: T_web
+    project: web
+    kind: agent
+    agent: mock
+    prompt: "Use the API contract."
+    inputs:
+      api_contract:
+        from: T_contract.openapi
+      spare_input:
+        from: T_contract.spare
+        required: false
+"#,
+    );
+
+    let final_state = run_plan(plan, projects, ExecConfig::default())
+        .await
+        .expect("run_plan");
+    assert_eq!(final_state.status, RunStatus::Done);
+    let run_dir = &final_state.run_dir;
+
+    // N2: the agent task got a manifest (written after every setup gate passed).
+    let manifest = maestro::scheduler::context::read_manifest(run_dir, "T_web")
+        .expect("read manifest ok")
+        .expect("agent task has a context manifest");
+    assert_eq!(manifest.task_id, "T_web");
+    assert_eq!(manifest.kind, "agent");
+    assert!(manifest.layers.iter().any(|l| l.id == "task.prompt"));
+
+    // N1: workflow.inputs reflects the actually-injected input only.
+    let wf = manifest
+        .layers
+        .iter()
+        .find(|l| l.id == "workflow.inputs")
+        .expect("workflow.inputs layer present");
+    assert_eq!(wf.item_count, 1, "only the injected input is counted");
+    let refs: Vec<&str> = wf.refs.iter().map(|r| r.reference.as_str()).collect();
+    assert!(
+        refs.contains(&"api_contract"),
+        "alias ref of the injected input"
+    );
+    assert!(
+        refs.contains(&"T_contract.openapi"),
+        "producer.output ref of the injected input"
+    );
+    assert!(
+        !refs.iter().any(|r| r.contains("spare")),
+        "the not-injected (absent-output) input must not be in refs: {refs:?}"
+    );
+
+    // privacy: no raw prompt body, no producer snapshot/source path in the artifact.
+    let json = std::fs::read_to_string(run_dir.join("context").join("T_web.json")).unwrap();
+    assert!(!json.contains("Use the API contract"), "no raw task body");
+    let snapshot = &final_state.tasks["T_contract"].workflow_outputs["openapi"].snapshot_path;
+    assert!(
+        !json.contains(snapshot.as_str()),
+        "no snapshot path in manifest"
+    );
+
+    // verify task gets no manifest (agent-only).
+    assert!(
+        maestro::scheduler::context::read_manifest(run_dir, "T_contract")
+            .unwrap()
+            .is_none()
+    );
+
+    clear_workspace();
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn f116_no_orphan_manifest_when_setup_gate_fails() {
+    // N2: an agent task that fails a synchronous setup gate (worktree policy)
+    // BEFORE the adapter must leave no "looks-dispatched" context manifest.
+    let dir = make_workspace();
+    ensure_dirs(dir.path(), &["api"]);
+    // Real git repo so worktree isolation engages (with max_parallel > 1).
+    init_git_repo(&dir.path().join("api"));
+    let mut projects = projects_for(dir.path(), &["api"]);
+    // A denied copy_files entry (matches `**/.env*`) makes worktree-policy
+    // validation fail before the adapter is ever invoked.
+    projects.projects.get_mut("api").unwrap().copy_files = vec![".env".to_string()];
+
+    let plan = parse_plan(
+        r#"
+spec: f116 setup deny
+tasks:
+  - id: T_denied
+    project: api
+    kind: agent
+    agent: mock
+    prompt: "do work"
+"#,
+    );
+    let cfg = ExecConfig {
+        max_parallel: 2,
+        ..ExecConfig::default()
+    };
+    let final_state = run_plan(plan, projects, cfg).await.expect("run_plan");
+
+    assert_eq!(
+        final_state.tasks["T_denied"].status,
+        TaskStatus::Failed,
+        "the denied copy_files policy must fail the task at the setup gate"
+    );
+    assert!(
+        maestro::scheduler::context::read_manifest(&final_state.run_dir, "T_denied")
+            .unwrap()
+            .is_none(),
+        "a setup-failed task must not leave an orphan context manifest"
+    );
+
+    clear_workspace();
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn f117_fresh_run_writes_resume_descriptor_with_seeded_outputs() {
+    // Boundary 1+2: a completed run leaves a valid RESUME.json that reflects all
+    // task statuses, and a Done task's captured workflow output is counted in
+    // seeded_tasks. Privacy: no raw prompt body / snapshot path in the artifact.
+    let dir = make_workspace();
+    ensure_dirs(dir.path(), &["api", "web"]);
+    let projects = projects_for(dir.path(), &["api", "web"]);
+    let plan = parse_plan(
+        r#"
+spec: f117 fresh run
+tasks:
+  - id: T_contract
+    project: api
+    kind: verify
+    agent: shell
+    command: "mkdir -p schemas && printf 'x: 1\n' > schemas/openapi.yaml"
+    outputs:
+      openapi:
+        path: schemas/openapi.yaml
+  - id: T_web
+    project: web
+    kind: agent
+    agent: mock
+    prompt: "use the contract"
+    inputs:
+      api_contract:
+        from: T_contract.openapi
+"#,
+    );
+
+    let final_state = run_plan(plan, projects, ExecConfig::default())
+        .await
+        .expect("run_plan");
+    assert_eq!(final_state.status, RunStatus::Done);
+    let run_dir = &final_state.run_dir;
+
+    let d = maestro::scheduler::resume::read_descriptor(run_dir)
+        .expect("read descriptor ok")
+        .expect("a fresh run writes a resume descriptor");
+    assert_eq!(d.run_id, final_state.run_id);
+    assert_eq!(d.state.task_total, 2);
+    assert_eq!(d.state.done, 2);
+    assert_eq!(d.state.run_status, "done");
+    // both tasks done -> both seeded; the producer carries its captured output count.
+    assert_eq!(d.seeded_tasks.len(), 2);
+    let producer = d
+        .seeded_tasks
+        .iter()
+        .find(|s| s.task_id == "T_contract")
+        .expect("producer seeded");
+    assert_eq!(
+        producer.workflow_outputs, 1,
+        "the producer's captured output is counted in seeded_tasks"
+    );
+    // event cursor advanced and settled on real task completions.
+    assert!(d.event_ledger.last_seq >= 2);
+    assert!(d.event_ledger.last_settled_seq >= 1);
+
+    // privacy: no raw prompt body, no producer snapshot path in the descriptor.
+    let json =
+        std::fs::read_to_string(maestro::scheduler::resume::descriptor_path(run_dir)).unwrap();
+    assert!(!json.contains("use the contract"), "no raw prompt body");
+    let snapshot = &final_state.tasks["T_contract"].workflow_outputs["openapi"].snapshot_path;
+    assert!(
+        !json.contains(snapshot.as_str()),
+        "no snapshot path in descriptor"
+    );
+
+    clear_workspace();
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn f117_dry_run_writes_no_resume_descriptor() {
+    // Boundary 5: the `--dry` preview path never calls run_plan, so it must not
+    // produce a RESUME.json under any run dir it stages.
+    let dir = make_workspace();
+    ensure_dirs(dir.path(), &["api"]);
+    let projects = projects_for(dir.path(), &["api"]);
+    let plan = parse_plan(
+        r#"
+spec: f117 dry run
+tasks:
+  - id: T_a
+    project: api
+    kind: agent
+    agent: mock
+    prompt: "do work"
+"#,
+    );
+
+    let summary =
+        maestro::scheduler::dry_run_in_workspace(&plan, &projects, dir.path()).expect("dry run");
+    // the dry preview stages a run dir (PLAN snapshot + prompts) but writes no
+    // resume guard.
+    assert!(
+        maestro::scheduler::resume::read_descriptor(&summary.run_dir)
+            .expect("read ok")
+            .is_none(),
+        "dry-run must not write a resume descriptor"
+    );
+    assert!(
+        !maestro::scheduler::resume::descriptor_path(&summary.run_dir).exists(),
+        "no RESUME.json in a dry-run dir"
+    );
+
+    clear_workspace();
+}
+
+fn resume_event(seq: u64, kind: &str, run_id: &str) -> maestro::scheduler::events::RunEvent {
+    serde_json::from_value(serde_json::json!({
+        "event_id": format!("e{seq}"),
+        "run_id": run_id,
+        "seq": seq,
+        "timestamp": "2026-06-05T00:00:00Z",
+        "kind": kind,
+    }))
+    .unwrap()
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn f117_dogfood_mid_task_crash_resumes_and_seeds_done_task() {
+    // Step 4 dogfood — a REAL mid-task crash (not a quiescent window): a run is
+    // killed while the consumer task is running. On disk that leaves the producer
+    // Done with a captured output, the consumer's `task.started` as a non-settling
+    // tail in the ledger, a descriptor as-of-the-producer-settle, and a
+    // still-"running" state with a dead pid. The append-only cursor fix must let
+    // this resume; resume must seed the producer and run the consumer.
+    let dir = make_workspace();
+    ensure_dirs(dir.path(), &["api", "web"]);
+    let projects = projects_for(dir.path(), &["api", "web"]);
+    let plan = parse_plan(
+        r#"
+spec: f117 dogfood
+tasks:
+  - id: T_contract
+    project: api
+    kind: verify
+    agent: shell
+    command: "mkdir -p schemas && printf 'x: 1\n' > schemas/openapi.yaml"
+    outputs:
+      openapi:
+        path: schemas/openapi.yaml
+  - id: T_web
+    project: web
+    kind: agent
+    agent: mock
+    prompt: "use the contract"
+    inputs:
+      api_contract:
+        from: T_contract.openapi
+"#,
+    );
+
+    // 1) Run the full plan once to produce a REAL run dir (real captured output
+    //    for the producer, real PLAN.yaml snapshot).
+    let done_state = run_plan(plan.clone(), projects.clone(), ExecConfig::default())
+        .await
+        .expect("initial run_plan");
+    assert_eq!(done_state.status, RunStatus::Done);
+    let run_dir = done_state.run_dir.clone();
+    let run_id = done_state.run_id.clone();
+
+    // 2) Rewind the on-disk artifacts to a mid-T_web crash.
+    let mut crash = done_state.clone();
+    crash.status = RunStatus::Running;
+    crash.pid = 999_999; // a dead pid -> abandoned
+    crash.ended_at = None;
+    {
+        let web = crash.tasks.get_mut("T_web").expect("T_web");
+        web.status = TaskStatus::Running; // started, never settled
+        web.ended_at = None;
+    }
+    std::fs::write(
+        run_dir.join("RUN_STATE.json"),
+        serde_json::to_string_pretty(&crash).unwrap(),
+    )
+    .unwrap();
+
+    // The descriptor as-of the producer's settle: ledger [run.started, A settle]
+    // (last_settled = 2), seeded = [T_contract].
+    let desc_events = [
+        resume_event(1, "run.started", &run_id),
+        resume_event(2, "task.completed", &run_id),
+    ];
+    let descriptor = maestro::scheduler::resume::build_descriptor(
+        &run_dir,
+        &crash,
+        &desc_events,
+        crash.started_at,
+        crash.started_at,
+        999_999,
+    )
+    .expect("build descriptor");
+    maestro::scheduler::resume::write_descriptor(&run_dir, &descriptor).unwrap();
+
+    // The on-disk ledger at the crash adds T_web's non-settling `task.started`
+    // tail (seq 3) beyond the descriptor's last_seq (2).
+    let ledger = [
+        resume_event(1, "run.started", &run_id),
+        resume_event(2, "task.completed", &run_id),
+        resume_event(3, "task.started", &run_id),
+    ];
+    let mut ndjson = String::new();
+    for e in &ledger {
+        ndjson.push_str(&serde_json::to_string(e).unwrap());
+        ndjson.push('\n');
+    }
+    std::fs::write(run_dir.join("events.ndjson"), ndjson).unwrap();
+
+    // 3) The guard must allow this real mid-task crash (the append-only tail is
+    //    not staleness), seeding exactly the producer.
+    let report =
+        maestro::scheduler::resume::validate_resume_target(&run_dir, false).expect("validate ok");
+    assert!(
+        report.can_resume,
+        "a real mid-task crash must be resumable; issues: {:?}",
+        report.issues
+    );
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|i| i.code == maestro::schema::resume::ResumeIssueCode::EventCursorStale),
+        "the task.started tail is not cursor staleness: {:?}",
+        report.issues
+    );
+    assert_eq!(report.reusable_done_tasks, vec!["T_contract"]);
+
+    // 4) Resume: a new run seeds the producer (skipped) and runs the consumer.
+    let cfg = ExecConfig {
+        skip: report.reusable_done_tasks.clone(),
+        seed_skipped_from: Some(crash),
+        ..ExecConfig::default()
+    };
+    let resumed = run_plan(plan, projects, cfg)
+        .await
+        .expect("resume run_plan");
+    assert_eq!(resumed.status, RunStatus::Done, "resumed run completes");
+    // The producer was SEEDED (skipped, not re-executed) and still carries its
+    // captured output; the consumer actually ran.
+    assert_eq!(
+        resumed.tasks["T_contract"].status,
+        TaskStatus::Skipped,
+        "producer was seeded, not re-run"
+    );
+    assert!(
+        !resumed.tasks["T_contract"].workflow_outputs.is_empty(),
+        "seeded producer carries its captured output"
+    );
+    assert_eq!(
+        resumed.tasks["T_web"].status,
+        TaskStatus::Done,
+        "consumer ran to completion on resume"
+    );
+
+    clear_workspace();
+}
+
+/// F-122: a real run pins `PLAN_PREVIEW.json` beside `PLAN.yaml`, and the pinned
+/// preview mechanically matches the on-disk plan (task count, dependency edges,
+/// and the stable plan hash).
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn f122_pins_plan_preview_snapshot_aligned_with_plan_yaml() {
+    let dir = make_workspace();
+    ensure_dirs(dir.path(), &["core", "cli"]);
+    let projects = projects_for(dir.path(), &["core", "cli"]);
+
+    let plan = parse_plan(
+        r#"
+spec: F-122 pin preview
+tasks:
+  - id: T_core
+    project: core
+    kind: verify
+    agent: shell
+    command: "echo ok"
+  - id: T_cli
+    project: cli
+    kind: verify
+    agent: shell
+    command: "echo ok"
+    depends_on: [T_core]
+"#,
+    );
+    let final_state = run_plan(plan, projects, ExecConfig::default())
+        .await
+        .expect("run_plan");
+    let run_dir = &final_state.run_dir;
+
+    // The pin exists beside PLAN.yaml and parses as the v1 snapshot.
+    let snap_path = run_dir.join("PLAN_PREVIEW.json");
+    assert!(snap_path.exists(), "F-122 must pin PLAN_PREVIEW.json");
+    let snap = maestro::schema::preview::PlanPreviewSnapshot::from_json(
+        &std::fs::read_to_string(&snap_path).unwrap(),
+    )
+    .expect("parse PLAN_PREVIEW.json");
+    assert_eq!(snap.schema_version, "maestro.plan_preview_snapshot.v1");
+    assert_eq!(snap.source, "run");
+    assert_eq!(snap.plan_path, "PLAN.yaml");
+    assert!(snap.gate.is_none(), "no gate decision is fabricated in v1");
+
+    // Mechanically check the pinned preview against the on-disk PLAN.yaml.
+    let plan_yaml: Plan =
+        serde_yaml::from_str(&std::fs::read_to_string(run_dir.join("PLAN.yaml")).unwrap()).unwrap();
+    assert_eq!(snap.preview.task_count as usize, plan_yaml.tasks.len());
+
+    let mut expected_edges: Vec<(String, String)> = plan_yaml
+        .tasks
+        .iter()
+        .flat_map(|t| t.depends_on.iter().map(move |d| (d.clone(), t.id.clone())))
+        .collect();
+    let mut pinned_edges: Vec<(String, String)> = snap
+        .preview
+        .dependency_edges
+        .iter()
+        .map(|e| (e.from.clone(), e.to.clone()))
+        .collect();
+    expected_edges.sort();
+    pinned_edges.sort();
+    assert_eq!(
+        pinned_edges, expected_edges,
+        "pinned dependency edges match PLAN.yaml depends_on"
+    );
+    assert_eq!(
+        pinned_edges,
+        vec![("T_core".to_string(), "T_cli".to_string())],
+        "the one declared dependency edge is pinned"
+    );
+
+    // plan_hash is the stable hash of the run dir's PLAN.yaml (drift-detectable).
+    let expect_hash = maestro::file_guard::file_hash(&run_dir.join("PLAN.yaml")).unwrap();
+    assert_eq!(snap.plan_hash, expect_hash);
+    assert!(snap.plan_hash.starts_with("fnv1a64:"));
+
+    clear_workspace();
+}
+
+// ─── F-126: node tool-policy violation gate (B4, opt-in) ─────────────────
+
+/// A user role with no write capability (`git_write:false` → `fs_write:false`),
+/// shell allowed with no command allowlist (allow-all) so an `echo` can change a
+/// tracked file and trip the policy violation.
+fn write_no_write_role(workspace: &std::path::Path) {
+    let roles_dir = workspace.join(".maestro").join("roles");
+    std::fs::create_dir_all(&roles_dir).unwrap();
+    std::fs::write(
+        roles_dir.join("restricted.md"),
+        "---\nname: restricted\nallowed_tools:\n  git_write: false\n---\nno-write role\n",
+    )
+    .unwrap();
+}
+
+fn restricted_projects(dir: &std::path::Path) -> ProjectsConfig {
+    init_git_repo(&dir.join("api"));
+    write_no_write_role(dir);
+    let mut projects = projects_for(dir, &["api"]);
+    projects.projects.get_mut("api").unwrap().role = Some("restricted".into());
+    projects
+}
+
+const POLICY_VIOLATION_PLAN: &str = r#"
+spec: policy gate
+tasks:
+  - id: T0
+    project: api
+    kind: verify
+    agent: shell
+    command: "echo changed > marker.txt"
+"#;
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn policy_gate_off_by_default_ignores_violation() {
+    // Flag default OFF: a real violation still integrates, no gate, no behavior
+    // change vs the existing flow.
+    let dir = make_workspace();
+    ensure_dirs(dir.path(), &["api"]);
+    let projects = restricted_projects(dir.path()); // gate_on_policy_violation = false
+    let st = run_plan(
+        parse_plan(POLICY_VIOLATION_PLAN),
+        projects,
+        ExecConfig::default(),
+    )
+    .await
+    .expect("run_plan");
+    assert_eq!(
+        st.tasks["T0"].status,
+        TaskStatus::Done,
+        "flag off: integrates, never gates"
+    );
+    let findings = maestro::scheduler::findings::read_findings(&st.run_dir).unwrap();
+    assert!(
+        !findings.iter().any(|f| f.source == "policy-gate"),
+        "flag off must not record a policy-gate finding"
+    );
+    clear_workspace();
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn policy_gate_on_gates_violation_then_approves() {
+    // Flag ON + present violation → enters approval; approve → integrates, and a
+    // `policy-gate` finding proves it was policy-gated (not just risk/manual).
+    let dir = make_workspace();
+    ensure_dirs(dir.path(), &["api"]);
+    let mut projects = restricted_projects(dir.path());
+    projects.defaults.gate_on_policy_violation = true;
+
+    let workspace = dir.path().to_path_buf();
+    let approver = tokio::spawn(async move {
+        let approvals_dir = workspace.join(".maestro").join("control").join("approvals");
+        for _ in 0..200 {
+            if approvals_dir.exists() {
+                std::fs::write(approvals_dir.join("T0"), b"ok").ok();
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("approvals dir never appeared — task was not policy-gated");
+    });
+
+    let st = run_plan(
+        parse_plan(POLICY_VIOLATION_PLAN),
+        projects,
+        ExecConfig::default(),
+    )
+    .await
+    .expect("run_plan");
+    approver.await.ok();
+
+    assert_eq!(
+        st.tasks["T0"].status,
+        TaskStatus::Done,
+        "approved → integrates"
+    );
+    let findings = maestro::scheduler::findings::read_findings(&st.run_dir).unwrap();
+    let policy = findings.iter().find(|f| f.source == "policy-gate");
+    assert!(policy.is_some(), "expected a policy-gate finding");
+    assert!(
+        policy.unwrap().summary.contains("git_write"),
+        "finding should name the violated capability: {:?}",
+        policy.unwrap().summary
+    );
+    clear_workspace();
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn policy_gate_on_compliant_does_not_gate() {
+    // Flag ON + default (compliant) role: write capability is requested, so a
+    // file change is within policy → integrates, no gate.
+    let dir = make_workspace();
+    ensure_dirs(dir.path(), &["api"]);
+    init_git_repo(&dir.path().join("api"));
+    let mut projects = projects_for(dir.path(), &["api"]); // default role: git_write true
+    projects.defaults.gate_on_policy_violation = true;
+    let st = run_plan(
+        parse_plan(POLICY_VIOLATION_PLAN),
+        projects,
+        ExecConfig::default(),
+    )
+    .await
+    .expect("run_plan");
+    assert_eq!(
+        st.tasks["T0"].status,
+        TaskStatus::Done,
+        "compliant → integrates"
+    );
+    let findings = maestro::scheduler::findings::read_findings(&st.run_dir).unwrap();
+    assert!(
+        !findings.iter().any(|f| f.source == "policy-gate"),
+        "compliant task must not be policy-gated"
+    );
+    clear_workspace();
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn policy_gate_on_worktree_branch_without_diff_does_not_gate() {
+    // F-126-fu: flag ON + no-write role + a task with NO file diff. The executor
+    // still auto-fills the per-task worktree branch, but `branch` is not a write
+    // signal, so this must NOT gate (it would hang on approval if it regressed).
+    let dir = make_workspace();
+    ensure_dirs(dir.path(), &["api"]);
+    let mut projects = restricted_projects(dir.path());
+    projects.defaults.gate_on_policy_violation = true;
+    let plan = parse_plan(
+        r#"
+spec: branch-only no gate
+tasks:
+  - id: T0
+    project: api
+    kind: verify
+    agent: shell
+    command: "echo hello"
+"#,
+    );
+    let st = run_plan(plan, projects, ExecConfig::default())
+        .await
+        .expect("run_plan");
+    assert_eq!(
+        st.tasks["T0"].status,
+        TaskStatus::Done,
+        "no diff → not gated despite the auto worktree branch"
+    );
+    let findings = maestro::scheduler::findings::read_findings(&st.run_dir).unwrap();
+    assert!(
+        !findings.iter().any(|f| f.source == "policy-gate"),
+        "a worktree-only branch must not be policy-gated"
+    );
     clear_workspace();
 }

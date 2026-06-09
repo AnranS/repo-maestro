@@ -13,6 +13,7 @@ import {
 } from "lucide-react"
 import type { ParallelWindow, RunEvidence, RunReplay } from "../../types"
 import { t } from "../../i18n"
+import { CollapsibleSection } from "../ui/CollapsibleSection"
 
 export function EvidencePanel({
   evidence,
@@ -28,9 +29,11 @@ export function EvidencePanel({
   const acceptancePassed = evidence.acceptance.filter((check) => check.passed).length
   const browser = evidence.browser ?? { present: false, artifact_count: 0 }
   return (
-    <section className="bg-bg-panel border border-line rounded-xl">
-      <div className="px-4 py-2.5 border-b border-line flex items-center justify-between">
-        <span className="text-xs uppercase tracking-wider text-ink-faint">{t("tasks.evidence")}</span>
+    <CollapsibleSection
+      title={t("tasks.evidence")}
+      summary={`${acceptancePassed}/${evidence.acceptance.length}`}
+    >
+      <div className="px-4 py-2.5 border-b border-line flex items-center justify-end">
         <div className="flex flex-wrap items-center justify-end gap-2">
           {(["overview", "timeline", "browser", "pr"] as const).map((name) => (
             <button
@@ -86,7 +89,7 @@ export function EvidencePanel({
         {tab === "browser" && <BrowserEvidencePanel evidence={evidence} />}
         {tab === "pr" && <PrBodyPanel body={prBody} />}
       </div>
-    </section>
+    </CollapsibleSection>
   )
 }
 
@@ -165,7 +168,7 @@ function BrowserEvidencePanel({ evidence }: { evidence: RunEvidence }) {
             {check.passed ? (
               <CheckCircle2 size={14} className="mt-0.5 text-green-300 shrink-0" />
             ) : (
-              <XCircle size={14} className="mt-0.5 text-red-300 shrink-0" />
+              <XCircle size={14} className="mt-0.5 text-status-danger shrink-0" />
             )}
             <div className="min-w-0">
               <div className="text-ink-dim truncate">{check.describe}</div>
@@ -253,7 +256,7 @@ function FailureList({
         <span>{label}</span>
       </div>
       {lines.slice(0, 4).map((line) => (
-        <div key={line} className="font-mono text-red-200/80 truncate">{line}</div>
+        <div key={line} className="font-mono text-status-danger/80 truncate">{line}</div>
       ))}
     </div>
   )

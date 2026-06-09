@@ -16,6 +16,8 @@
 use crate::adapter::Usage;
 use crate::scheduler::findings::Finding;
 use crate::scheduler::state::{RunState, RunStatus, TaskState, TaskStatus};
+use crate::schema::artifacts::{ArtifactRef, ArtifactSource};
+use crate::schema::permissions::Enforcement;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -56,6 +58,9 @@ pub struct RunMonitor {
     pub blocked_tasks: Vec<MonitorTaskRef>,
     pub approvals_pending: Vec<MonitorTaskRef>,
     pub findings_summary: Vec<FindingSummary>,
+    /// F-123: read-only projection of the run's currently-pending review gates.
+    #[serde(default)]
+    pub gates: Vec<ReviewGate>,
     pub usage: Usage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<u64>,
@@ -241,11 +246,179 @@ impl RunMonitor {
             blocked_tasks,
             approvals_pending,
             findings_summary: findings_summary(findings),
+            gates: review_gates(state, findings),
             usage: state.usage.clone(),
             budget_tokens: state.budget_tokens,
             updated_at,
         }
     }
+}
+
+// ── review gates (F-123) ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateScope {
+    Run,
+    Task,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateKind {
+    Plan,
+    Outcome,
+    TaskApproval,
+}
+
+/// Gate decision status. v1 only ever projects `Pending` (currently-waiting
+/// gates). The variants `Approved` / `Rejected` / `RequestChanges` are reserved
+/// so decided-history can be added later WITHOUT restructuring the contract —
+/// that needs write-side gate-decision events the current model doesn't record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateStatus {
+    Pending,
+    Approved,
+    Rejected,
+    RequestChanges,
+}
+
+/// Small typed evidence for a gate — counts/refs only, never large objects. Each
+/// `kind` populates its own subset; the rest stay `None` (omitted).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateEvidence {
+    // plan
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependency_count: Option<u32>,
+    // outcome
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_passed: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_total: Option<u32>,
+    // task approval
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub findings_count: Option<u32>,
+}
+
+/// A single currently-pending review gate (read-only projection).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewGate {
+    /// Stable id: `run:plan` / `run:outcome` / `task:<task_id>`.
+    pub gate_id: String,
+    pub scope: GateScope,
+    pub kind: GateKind,
+    pub status: GateStatus,
+    /// Set only for task-scoped gates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    /// One-line human-readable summary of what's being decided.
+    pub summary: String,
+    pub evidence: GateEvidence,
+}
+
+/// F-123: project the run's CURRENTLY-PENDING review gates (read-only). v1 emits
+/// only `Pending` gates. Decided history (who/when/decision) is deliberately out
+/// of scope — it needs write-side gate-decision events the current model does not
+/// record, and would violate "first cut read-only, no gate-write changes".
+fn review_gates(state: &RunState, findings: &[Finding]) -> Vec<ReviewGate> {
+    use std::collections::BTreeSet;
+    let mut gates = Vec::new();
+
+    // Run-level boundary gate (plan XOR outcome), only while the run is paused on
+    // one. `pending_gate` is `None` once the human decides — v1 shows the live
+    // gate, not its later decision.
+    match state.pending_gate.as_deref() {
+        Some("plan") => {
+            let project_count = state
+                .tasks
+                .values()
+                .map(|t| t.project.as_str())
+                .collect::<BTreeSet<_>>()
+                .len() as u32;
+            let task_count = state.tasks.len() as u32;
+            let dependency_count: u32 = state
+                .tasks
+                .values()
+                .map(|t| t.depends_on.len() as u32)
+                .sum();
+            gates.push(ReviewGate {
+                gate_id: "run:plan".to_string(),
+                scope: GateScope::Run,
+                kind: GateKind::Plan,
+                status: GateStatus::Pending,
+                task_id: None,
+                summary: format!(
+                    "Plan gate: approve to run {task_count} task(s) across {project_count} project(s)"
+                ),
+                evidence: GateEvidence {
+                    project_count: Some(project_count),
+                    task_count: Some(task_count),
+                    dependency_count: Some(dependency_count),
+                    ..Default::default()
+                },
+            });
+        }
+        Some("outcome") => {
+            let (passed, total) = state.acceptance_summary().unwrap_or((0, 0));
+            gates.push(ReviewGate {
+                gate_id: "run:outcome".to_string(),
+                scope: GateScope::Run,
+                kind: GateKind::Outcome,
+                status: GateStatus::Pending,
+                task_id: None,
+                summary: format!(
+                    "Outcome gate: {} · {passed}/{total} acceptance check(s) passed",
+                    if state.verified {
+                        "verified"
+                    } else {
+                        "not verified"
+                    }
+                ),
+                evidence: GateEvidence {
+                    verified: Some(state.verified),
+                    acceptance_passed: Some(passed as u32),
+                    acceptance_total: Some(total as u32),
+                    ..Default::default()
+                },
+            });
+        }
+        _ => {}
+    }
+
+    // Task-level approval gates: each task awaiting human approval after running.
+    for id in &state.approvals_pending {
+        let Some(t) = state.tasks.get(id) else {
+            continue;
+        };
+        let findings_count = findings
+            .iter()
+            .filter(|f| f.task_id.as_deref() == Some(id.as_str()))
+            .count() as u32;
+        gates.push(ReviewGate {
+            gate_id: format!("task:{id}"),
+            scope: GateScope::Task,
+            kind: GateKind::TaskApproval,
+            status: GateStatus::Pending,
+            task_id: Some(id.clone()),
+            summary: format!("Task `{id}` is awaiting approval before integration"),
+            evidence: GateEvidence {
+                risk_level: t.risk_level.clone(),
+                findings_count: Some(findings_count),
+                ..Default::default()
+            },
+        });
+    }
+
+    gates
 }
 
 // ── task-level ──────────────────────────────────────────────────────────────
@@ -270,6 +443,201 @@ pub struct TaskArtifactSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     pub available: bool,
+}
+
+// ── tool policy (F-125) ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolPolicyStatus {
+    /// A permission-evidence record was resolved for this task.
+    Present,
+    /// No permission evidence — an explicit absence, NEVER "allow-all".
+    Absent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityPolicy {
+    pub name: String,
+    pub requested: bool,
+    pub enforcement: Enforcement,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetryPolicy {
+    pub attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
+    /// v1 has no per-tool idempotency model — always `"unknown"` (never assumed).
+    pub idempotency: String,
+}
+
+/// F-125: read-only per-node tool-policy projection. Resolves the EXISTING
+/// `PermissionEvidence` (the only source — no recompute from role defaults, which
+/// would drift from what actually ran) plus observed artifacts into one auditable
+/// view. v1 is projection/audit ONLY — no enforcement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskToolPolicy {
+    pub status: ToolPolicyStatus,
+    pub capabilities: Vec<CapabilityPolicy>,
+    /// Side-effecting capabilities the task REQUESTED (from permission evidence).
+    /// `shell` is a capability, not auto a side effect, so it is not listed here.
+    pub declared_effects: Vec<String>,
+    /// Side effects OBSERVED in the run (changed files, PR). `branch` is excluded
+    /// — it's the executor's auto worktree branch, not a real write (F-126-fu).
+    pub observed_effects: Vec<String>,
+    pub retry: RetryPolicy,
+    /// Run-local evidence refs the node produced (derived from `TaskState`, not
+    /// the evidence summary file; F-124 run-local rules apply).
+    pub required_evidence: Vec<ArtifactRef>,
+    /// Audit gaps — never silent: observed effects with no permission evidence,
+    /// or a terminal side-effecting task with no run-local evidence refs.
+    pub audit_gaps: Vec<String>,
+    /// The task's CURRENTLY-pending gate id (F-123), if any. v1 projects no gate
+    /// HISTORY — a completed/approved task is never flagged for an empty gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_gate_id: Option<String>,
+}
+
+fn cap(
+    name: &str,
+    requested: bool,
+    enforcement: Enforcement,
+    allowed_commands: Vec<String>,
+) -> CapabilityPolicy {
+    CapabilityPolicy {
+        name: name.to_string(),
+        requested,
+        enforcement,
+        allowed_commands,
+    }
+}
+
+fn task_tool_policy(state: &RunState, t: &TaskState) -> TaskToolPolicy {
+    let terminal = matches!(
+        t.status,
+        TaskStatus::Done | TaskStatus::Failed | TaskStatus::Cancelled | TaskStatus::Skipped
+    );
+
+    let (status, capabilities, declared_effects) = match &t.permission {
+        Some(pe) => {
+            let caps = vec![
+                cap(
+                    "shell",
+                    pe.requested.shell,
+                    pe.resolved.shell,
+                    pe.resolved.allowed_commands.clone(),
+                ),
+                cap(
+                    "git_write",
+                    pe.requested.git_write,
+                    pe.resolved.git_write,
+                    vec![],
+                ),
+                cap("network", pe.requested.network, pe.resolved.network, vec![]),
+                cap(
+                    "fs_write",
+                    pe.requested.fs_write,
+                    pe.resolved.fs_write,
+                    vec![],
+                ),
+                cap(
+                    "external_dir",
+                    pe.requested.external_dir,
+                    pe.resolved.external_dir,
+                    vec![],
+                ),
+                cap("mcp", pe.requested.mcp, pe.resolved.mcp, vec![]),
+            ];
+            // `shell` is a capability, not auto a side effect (per the contract).
+            let mut declared = Vec::new();
+            for (req, label) in [
+                (pe.requested.git_write, "git_write requested"),
+                (pe.requested.fs_write, "fs_write requested"),
+                (pe.requested.external_dir, "external_dir requested"),
+                (pe.requested.mcp, "mcp requested"),
+                (pe.requested.network, "network requested"),
+            ] {
+                if req {
+                    declared.push(label.to_string());
+                }
+            }
+            (ToolPolicyStatus::Present, caps, declared)
+        }
+        None => (ToolPolicyStatus::Absent, Vec::new(), Vec::new()),
+    };
+
+    let mut observed_effects = Vec::new();
+    if !t.artifacts.files_changed.is_empty() {
+        observed_effects.push(format!(
+            "{} file(s) changed",
+            t.artifacts.files_changed.len()
+        ));
+    }
+    if t.artifacts
+        .pr_url
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        observed_effects.push("pull request opened".to_string());
+    }
+    // `artifacts.branch` is NOT an observed write effect — the executor auto-fills
+    // it with the per-task worktree isolation branch for every git-backed task, so
+    // it can't distinguish a real push (F-126-fu). Keeps this projection's audit
+    // signals consistent with the policy gate (`scheduler::policy_gate`).
+
+    // Required evidence: the node's run-local refs straight from `TaskState`
+    // (never the evidence summary file). Unsafe refs are dropped defensively.
+    let mut required_evidence = t.artifacts.to_artifact_refs(&t.id);
+    if t.trajectory_path.is_some() {
+        required_evidence.push(ArtifactRef {
+            kind: "trajectory".to_string(),
+            source: ArtifactSource::AgentTask,
+            task_id: Some(t.id.clone()),
+            path: Some(format!("trajectories/{}.ndjson", t.id)),
+            uri: None,
+            name: None,
+            bytes: None,
+        });
+    }
+    required_evidence.retain(|r| r.run_local_violation().is_none());
+
+    // F-123 has no gate HISTORY — only the CURRENTLY-pending gate is knowable.
+    let pending_gate_id = if t.status == TaskStatus::AwaitingApproval
+        || state.approvals_pending.iter().any(|id| id == &t.id)
+    {
+        Some(format!("task:{}", t.id))
+    } else {
+        None
+    };
+
+    let has_effects = !declared_effects.is_empty() || !observed_effects.is_empty();
+    let mut audit_gaps = Vec::new();
+    if matches!(status, ToolPolicyStatus::Absent) && !observed_effects.is_empty() {
+        audit_gaps
+            .push("observed side effects but no permission evidence was recorded".to_string());
+    }
+    if terminal && has_effects && required_evidence.is_empty() {
+        audit_gaps
+            .push("terminal task with side effects but no run-local evidence refs".to_string());
+    }
+
+    TaskToolPolicy {
+        status,
+        capabilities,
+        declared_effects,
+        observed_effects,
+        retry: RetryPolicy {
+            attempts: t.attempts,
+            max_retries: None,
+            idempotency: "unknown".to_string(),
+        },
+        required_evidence,
+        audit_gaps,
+        pending_gate_id,
+    }
 }
 
 /// Task-level detail projection (`maestro.task_detail.v1`).
@@ -305,6 +673,14 @@ pub struct TaskDetail {
     pub findings: Vec<Finding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// F-125: read-only tool-policy projection for this node (always present;
+    /// `status` is `absent` when there is no permission evidence — never
+    /// "allow-all").
+    pub tool_policy: TaskToolPolicy,
+    /// F-136a1: read-only RuntimeProfile safety label derived from the same
+    /// permission evidence (always present; absent permission projects explicitly
+    /// as `unknown`/`requires_review`, never a missing field). NO enforcement.
+    pub runtime_profile: crate::schema::runtime_profile::RuntimeProfileView,
 }
 
 /// Run-relative artifact refs derived from the task id (never the stored
@@ -395,6 +771,11 @@ impl TaskDetail {
             artifacts: task_artifacts(t),
             findings,
             last_error: t.error.clone(),
+            tool_policy: task_tool_policy(state, t),
+            runtime_profile: crate::schema::runtime_profile::derive(
+                t.permission.as_ref(),
+                crate::scheduler::policy_gate::observed_write(t),
+            ),
         })
     }
 }
@@ -459,6 +840,7 @@ mod tests {
             approvals_pending: approvals.iter().map(|s| s.to_string()).collect(),
             task_order: order,
             session_id: None,
+            delivery_id: None,
             usage: Default::default(),
             budget_tokens: Some(100_000),
             pending_gate: None,
@@ -483,6 +865,244 @@ mod tests {
             Some(t) => f.task(t),
             None => f,
         }
+    }
+
+    fn acc(passed: bool) -> crate::scheduler::state::AcceptanceResult {
+        crate::scheduler::state::AcceptanceResult {
+            describe: "check".into(),
+            check: "true".into(),
+            passed,
+            exit_code: Some(if passed { 0 } else { 1 }),
+            output: String::new(),
+            started_at: Utc.with_ymd_and_hms(2026, 6, 4, 0, 0, 0).unwrap(),
+            ended_at: Utc.with_ymd_and_hms(2026, 6, 4, 0, 0, 1).unwrap(),
+        }
+    }
+
+    #[test]
+    fn review_gates_three_states_plan_outcome_task_and_absent() {
+        // absent — no pending gate, nothing awaiting approval.
+        let st = run(
+            RunStatus::Running,
+            vec![task("T0", TaskStatus::Done, &[])],
+            &[],
+        );
+        assert!(
+            RunMonitor::from_state_and_findings(&st, &[], None)
+                .gates
+                .is_empty(),
+            "no pending gate and no approvals → absent (empty gates)"
+        );
+
+        // plan gate present, evidence = project/task/dependency counts.
+        let mut st = run(
+            RunStatus::Running,
+            vec![
+                task("T0", TaskStatus::Pending, &[]),
+                task("T1", TaskStatus::Pending, &["T0"]),
+            ],
+            &[],
+        );
+        st.pending_gate = Some("plan".into());
+        let gates = RunMonitor::from_state_and_findings(&st, &[], None).gates;
+        assert_eq!(gates.len(), 1);
+        let g = &gates[0];
+        assert_eq!(g.gate_id, "run:plan");
+        assert_eq!(g.scope, GateScope::Run);
+        assert_eq!(g.kind, GateKind::Plan);
+        assert_eq!(g.status, GateStatus::Pending);
+        assert_eq!(g.task_id, None);
+        assert_eq!(g.evidence.task_count, Some(2));
+        assert_eq!(g.evidence.project_count, Some(1));
+        assert_eq!(g.evidence.dependency_count, Some(1));
+        assert_eq!(
+            g.evidence.verified, None,
+            "plan evidence carries no outcome fields"
+        );
+
+        // outcome gate present, evidence = verified + acceptance passed/total.
+        let mut st = run(
+            RunStatus::Running,
+            vec![task("T0", TaskStatus::Done, &[])],
+            &[],
+        );
+        st.pending_gate = Some("outcome".into());
+        st.verified = false;
+        st.acceptance_results = vec![acc(true), acc(false)];
+        let gates = RunMonitor::from_state_and_findings(&st, &[], None).gates;
+        assert_eq!(gates.len(), 1);
+        let g = &gates[0];
+        assert_eq!(g.gate_id, "run:outcome");
+        assert_eq!(g.kind, GateKind::Outcome);
+        assert_eq!(g.evidence.verified, Some(false));
+        assert_eq!(g.evidence.acceptance_passed, Some(1));
+        assert_eq!(g.evidence.acceptance_total, Some(2));
+        assert_eq!(
+            g.evidence.task_count, None,
+            "outcome evidence carries no plan fields"
+        );
+
+        // task-approval gate present, evidence = risk + task-scoped findings count.
+        let mut st = run(
+            RunStatus::Running,
+            vec![task("T0", TaskStatus::AwaitingApproval, &[])],
+            &["T0"],
+        );
+        st.tasks.get_mut("T0").unwrap().risk_level = Some("high".into());
+        let findings = vec![
+            finding(FindingKind::Risk, Severity::High, Some("T0")),
+            finding(FindingKind::Refute, Severity::Low, None), // not this task
+        ];
+        let m = RunMonitor::from_state_and_findings(&st, &findings, None);
+        let g = m
+            .gates
+            .iter()
+            .find(|g| g.scope == GateScope::Task)
+            .expect("task gate");
+        assert_eq!(g.gate_id, "task:T0");
+        assert_eq!(g.kind, GateKind::TaskApproval);
+        assert_eq!(g.status, GateStatus::Pending);
+        assert_eq!(g.task_id, Some("T0".into()));
+        assert_eq!(g.evidence.risk_level, Some("high".into()));
+        assert_eq!(g.evidence.findings_count, Some(1));
+
+        // serde round-trip of the whole monitor, gates included.
+        let back: RunMonitor = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back.gates, m.gates);
+    }
+
+    #[test]
+    fn task_tool_policy_present_absent_observed_effects_and_audit_gaps() {
+        use crate::schema::permissions::{
+            Enforcement, PermissionEvidence, PermissionRequest, ResolvedPermission,
+        };
+
+        // ABSENT + no observed effects → status absent, no caps, no gaps.
+        let st = run(
+            RunStatus::Running,
+            vec![task("T0", TaskStatus::Done, &[])],
+            &[],
+        );
+        let tp = TaskDetail::from_state_and_findings(&st, "T0", &[])
+            .unwrap()
+            .tool_policy;
+        assert_eq!(tp.status, ToolPolicyStatus::Absent);
+        assert!(tp.capabilities.is_empty());
+        assert!(tp.audit_gaps.is_empty());
+        assert_eq!(tp.retry.idempotency, "unknown");
+        assert_eq!(tp.retry.attempts, 0);
+
+        // ABSENT + observed effects (changed files) → audit_gap, never allow-all.
+        let mut st = run(
+            RunStatus::Running,
+            vec![task("T0", TaskStatus::Done, &[])],
+            &[],
+        );
+        st.tasks.get_mut("T0").unwrap().artifacts.files_changed = vec!["src/a.rs".into()];
+        let tp = TaskDetail::from_state_and_findings(&st, "T0", &[])
+            .unwrap()
+            .tool_policy;
+        assert_eq!(tp.status, ToolPolicyStatus::Absent);
+        assert!(tp.observed_effects.iter().any(|e| e.contains("file")));
+        assert!(tp
+            .audit_gaps
+            .iter()
+            .any(|g| g.contains("no permission evidence")));
+
+        // PRESENT: 6 caps; shell is a capability (not a declared effect), git_write
+        // requested IS a declared effect; allowed_commands carried on shell.
+        let mut st = run(
+            RunStatus::Running,
+            vec![task("T0", TaskStatus::Done, &[])],
+            &[],
+        );
+        st.tasks.get_mut("T0").unwrap().permission = Some(PermissionEvidence {
+            schema_version: PermissionEvidence::SCHEMA_VERSION.to_string(),
+            task_id: "T0".into(),
+            provider_id: "mock".into(),
+            mode_id: "m".into(),
+            requested: PermissionRequest {
+                shell: true,
+                git_write: true,
+                network: false,
+                fs_write: false,
+                external_dir: false,
+                mcp: false,
+                allowed_commands: vec!["echo".into()],
+            },
+            resolved: ResolvedPermission {
+                shell: Enforcement::Hard,
+                git_write: Enforcement::Soft,
+                network: Enforcement::NotApplicable,
+                fs_write: Enforcement::NotApplicable,
+                external_dir: Enforcement::NotApplicable,
+                mcp: Enforcement::NotApplicable,
+                allowed_commands: vec!["echo".into()],
+            },
+        });
+        let detail = TaskDetail::from_state_and_findings(&st, "T0", &[]).unwrap();
+        let tp = &detail.tool_policy;
+        assert_eq!(tp.status, ToolPolicyStatus::Present);
+        assert_eq!(tp.capabilities.len(), 6);
+        let shell = tp.capabilities.iter().find(|c| c.name == "shell").unwrap();
+        assert!(shell.requested);
+        assert_eq!(shell.enforcement, Enforcement::Hard);
+        assert_eq!(shell.allowed_commands, vec!["echo".to_string()]);
+        assert!(tp.declared_effects.iter().any(|e| e.contains("git_write")));
+        assert!(!tp.declared_effects.iter().any(|e| e.contains("shell")));
+        // serde round-trip (tool_policy included).
+        let back: TaskDetail =
+            serde_json::from_str(&serde_json::to_string(&detail).unwrap()).unwrap();
+        assert_eq!(back.tool_policy, detail.tool_policy);
+
+        // PENDING gate id only while awaiting approval; a done task is NOT flagged
+        // for an empty gate (F-123 projects no history).
+        let st = run(
+            RunStatus::Running,
+            vec![task("T0", TaskStatus::AwaitingApproval, &[])],
+            &["T0"],
+        );
+        let tp = TaskDetail::from_state_and_findings(&st, "T0", &[])
+            .unwrap()
+            .tool_policy;
+        assert_eq!(tp.pending_gate_id.as_deref(), Some("task:T0"));
+
+        let st = run(
+            RunStatus::Done,
+            vec![task("T1", TaskStatus::Done, &[])],
+            &[],
+        );
+        let tp = TaskDetail::from_state_and_findings(&st, "T1", &[])
+            .unwrap()
+            .tool_policy;
+        assert_eq!(tp.pending_gate_id, None);
+        assert!(!tp.audit_gaps.iter().any(|g| g.contains("gate")));
+    }
+
+    #[test]
+    fn tool_policy_worktree_branch_is_not_an_observed_effect() {
+        // F-126-fu consistency: a task with only the executor's auto worktree
+        // branch (no diff, no PR) must NOT list it as an observed effect, and must
+        // not raise an audit gap — same calibration as the policy gate.
+        let mut st = run(
+            RunStatus::Running,
+            vec![task("T0", TaskStatus::Done, &[])],
+            &[],
+        );
+        st.tasks.get_mut("T0").unwrap().artifacts.branch = Some("maestro/worktree/T0".into());
+        let tp = TaskDetail::from_state_and_findings(&st, "T0", &[])
+            .unwrap()
+            .tool_policy;
+        assert!(
+            tp.observed_effects.is_empty(),
+            "a worktree-only branch must not be an observed effect: {:?}",
+            tp.observed_effects
+        );
+        assert!(
+            tp.audit_gaps.is_empty(),
+            "a branch-only task must not raise an audit gap: {:?}",
+            tp.audit_gaps
+        );
     }
 
     #[test]
@@ -687,6 +1307,50 @@ mod tests {
                 .approval,
             Some(TaskApprovalState::Pending)
         );
+    }
+
+    #[test]
+    fn task_detail_carries_runtime_profile_present_and_absent() {
+        use crate::schema::permissions::{
+            provider_permission_profile, PermissionEvidence, PermissionRequest,
+        };
+        use crate::schema::runtime_profile::RuntimeProfile;
+
+        // Absent permission → unknown (F-136a1: never review_only, never a missing field).
+        let st = run(
+            RunStatus::Done,
+            vec![task("T0", TaskStatus::Done, &[])],
+            &[],
+        );
+        let td = TaskDetail::from_state_and_findings(&st, "T0", &[]).unwrap();
+        assert_eq!(td.runtime_profile.profile, RuntimeProfile::Unknown);
+
+        // Present permission, git_write requested on the shell provider → write_local,
+        // and git_write's Soft enforcement surfaces in `advisory` (never claimed hard).
+        let mut t = task("T1", TaskStatus::Done, &[]);
+        t.permission = Some(PermissionEvidence {
+            schema_version: PermissionEvidence::SCHEMA_VERSION.to_string(),
+            task_id: "T1".into(),
+            provider_id: "shell".into(),
+            mode_id: "m".into(),
+            requested: PermissionRequest {
+                shell: true,
+                git_write: true,
+                network: false,
+                fs_write: true,
+                external_dir: false,
+                mcp: false,
+                allowed_commands: vec![],
+            },
+            resolved: provider_permission_profile("shell"),
+        });
+        let st2 = run(RunStatus::Done, vec![t], &[]);
+        let td2 = TaskDetail::from_state_and_findings(&st2, "T1", &[]).unwrap();
+        assert_eq!(td2.runtime_profile.profile, RuntimeProfile::WriteLocal);
+        assert!(td2
+            .runtime_profile
+            .advisory
+            .contains(&"git_write".to_string()));
     }
 
     #[test]
