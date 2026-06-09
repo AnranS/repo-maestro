@@ -12,6 +12,11 @@ pub const RUN_STATE_FILE: &str = "RUN_STATE.json";
 pub const RUN_EVENTS_FILE: &str = "events.ndjson";
 pub const RUN_FINDINGS_FILE: &str = "findings.ndjson";
 pub const PLAN_SNAPSHOT: &str = "PLAN.yaml";
+/// F-122: the pinned plan-preview snapshot beside `PLAN.yaml` in a real run dir.
+pub const PLAN_PREVIEW_SNAPSHOT: &str = "PLAN_PREVIEW.json";
+/// F-127: the durable PM-to-delivery record in a delivery dir.
+pub const DELIVERIES_DIR: &str = "deliveries";
+pub const DELIVERY_FILE: &str = "DELIVERY.json";
 pub const RUN_REPORT_FILE: &str = "REPORT.md";
 pub const LOGS_DIR: &str = "logs";
 pub const TRAJECTORIES_DIR: &str = "trajectories";
@@ -44,6 +49,19 @@ pub fn projects_file() -> Result<PathBuf> {
 
 pub fn runs_dir() -> Result<PathBuf> {
     Ok(maestro_dir()?.join(RUNS_DIR))
+}
+
+/// F-127: PM-to-delivery records live here, one dir per delivery (a delivery
+/// precedes a run and may span multiple runs/retries, so it is NOT a run dir).
+pub fn deliveries_dir() -> Result<PathBuf> {
+    Ok(maestro_dir()?.join(DELIVERIES_DIR))
+}
+
+/// `.maestro/deliveries/<delivery_id>/` — the id is validated as a safe path
+/// component first (never a traversal).
+pub fn delivery_dir(delivery_id: &str) -> Result<PathBuf> {
+    validate_path_component("delivery id", delivery_id)?;
+    Ok(deliveries_dir()?.join(delivery_id))
 }
 
 pub fn bench_scenarios_dir() -> Result<PathBuf> {

@@ -11,6 +11,7 @@ pub mod chat;
 pub mod chat_tui;
 pub mod compare;
 pub mod deliberate;
+pub mod delivery;
 pub mod demo;
 pub mod discuss;
 pub mod doc;

@@ -14,9 +14,15 @@ import {
   ShieldAlert,
   GitCompare,
   Footprints,
+  Layers,
   AlertTriangle,
 } from "lucide-react"
-import type { TaskDiff, TaskState, TaskTrajectory } from "../types"
+import type {
+  TaskContextManifest,
+  TaskDiff,
+  TaskState,
+  TaskTrajectory,
+} from "../types"
 import { api } from "../api"
 import { t } from "../i18n"
 import { LogPane } from "./LogPane"
@@ -25,7 +31,7 @@ import { LogPane } from "./LogPane"
  *  "review changes" expander showing the real diff + a risk verdict — so the
  *  approval is an actual review, not a rubber-stamp (anti approval-fatigue).
  *  Writes the same markers `maestro approve` does. */
-function ApprovalButtons({ task }: { task: string }) {
+function ApprovalButtons({ task, runId }: { task: string; runId: string }) {
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
   const [diff, setDiff] = useState<TaskDiff | null>(null)
@@ -38,7 +44,7 @@ function ApprovalButtons({ task }: { task: string }) {
     if (next && !diff) {
       setLoading(true)
       try {
-        setDiff(await api.taskDiff("current", task))
+        setDiff(await api.taskDiff(runId, task))
       } catch {
         /* show buttons even if diff fails */
       } finally {
@@ -52,7 +58,7 @@ function ApprovalButtons({ task }: { task: string }) {
     if (decision === "reject" && !confirm(t("approval.rejectConfirm"))) return
     setBusy(true)
     try {
-      await api.runApprove("current", task, decision)
+      await api.runApprove(runId, task, decision)
     } finally {
       setBusy(false)
     }
@@ -69,7 +75,7 @@ function ApprovalButtons({ task }: { task: string }) {
           {diff && (
             <span
               className={`ml-1 inline-flex items-center gap-0.5 rounded px-1 ${
-                high ? "bg-red-500/15 text-red-300" : "bg-emerald-500/15 text-emerald-300"
+                high ? "bg-red-500/15 text-status-danger" : "bg-emerald-500/15 text-status-success"
               }`}
             >
               {high && <ShieldAlert size={9} />}
@@ -80,14 +86,14 @@ function ApprovalButtons({ task }: { task: string }) {
         <button
           onClick={(e) => decide(e, "approve")}
           disabled={busy}
-          className="inline-flex items-center gap-1 rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
+          className="inline-flex items-center gap-1 rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-status-success hover:bg-emerald-500/20 disabled:opacity-50"
         >
           <Check size={10} /> {t("approval.approve")}
         </button>
         <button
           onClick={(e) => decide(e, "reject")}
           disabled={busy}
-          className="inline-flex items-center gap-1 rounded border border-red-500/40 bg-red-500/10 px-1.5 py-0.5 text-[10px] text-red-300 hover:bg-red-500/20 disabled:opacity-50"
+          className="inline-flex items-center gap-1 rounded border border-red-500/40 bg-red-500/10 px-1.5 py-0.5 text-[10px] text-status-danger hover:bg-red-500/20 disabled:opacity-50"
         >
           <X size={10} /> {t("approval.reject")}
         </button>
@@ -98,7 +104,7 @@ function ApprovalButtons({ task }: { task: string }) {
           {diff && (
             <>
               <div
-                className={`mb-1.5 flex items-start gap-1.5 ${high ? "text-red-300" : "text-ink-mute"}`}
+                className={`mb-1.5 flex items-start gap-1.5 ${high ? "text-status-danger" : "text-ink-mute"}`}
               >
                 {high && <ShieldAlert size={12} className="mt-0.5 shrink-0" />}
                 <span>{diff.risk.reasons.join(" · ")}</span>
@@ -121,7 +127,7 @@ function ApprovalButtons({ task }: { task: string }) {
 /** A task's receipt: which files it changed (durable, from recorded artifacts)
  *  + an on-demand diff (the same /diff endpoint the approval card uses) so any
  *  task answers "what did this actually do?" with links to the change. */
-function ChangesReceipt({ task }: { task: TaskState }) {
+function ChangesReceipt({ task, runId }: { task: TaskState; runId: string }) {
   const [diff, setDiff] = useState<TaskDiff | null>(null)
   const [show, setShow] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -134,7 +140,7 @@ function ChangesReceipt({ task }: { task: TaskState }) {
     if (next && !diff) {
       setLoading(true)
       try {
-        setDiff(await api.taskDiff("current", task.id))
+        setDiff(await api.taskDiff(runId, task.id))
       } catch {
         /* worktree may be gone post-run — the file list above still stands */
       } finally {
@@ -152,7 +158,7 @@ function ChangesReceipt({ task }: { task: TaskState }) {
         </span>
         {branch && <span className="font-mono text-ink-faint">{branch}</span>}
         {files.length > 0 && (
-          <button onClick={toggle} className="text-blue-400 hover:text-blue-300">
+          <button onClick={toggle} className="text-accent hover:text-accent-soft">
             {show ? t("task.hideDiff") : t("task.viewDiff")}
           </button>
         )}
@@ -183,8 +189,8 @@ function ChangesReceipt({ task }: { task: TaskState }) {
 const BUCKET_COLOR: Record<string, string> = {
   read: "text-sky-300",
   search: "text-violet-300",
-  edit: "text-emerald-300",
-  run: "text-amber-300",
+  edit: "text-status-success",
+  run: "text-status-warning",
   git: "text-orange-300",
   other: "text-ink-faint",
 }
@@ -192,7 +198,7 @@ const BUCKET_COLOR: Record<string, string> = {
 /** A task's trajectory: how the agent got to the diff — its tool calls bucketed
  *  (reads / searches / edits / runs) with the step-by-step command list on
  *  demand. Surfaces the "harness effect": same diff, very different paths. */
-function TrajectoryReceipt({ task }: { task: TaskState }) {
+function TrajectoryReceipt({ task, runId }: { task: TaskState; runId: string }) {
   const [traj, setTraj] = useState<TaskTrajectory | null>(null)
   const [show, setShow] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -205,7 +211,7 @@ function TrajectoryReceipt({ task }: { task: TaskState }) {
     if (next && !traj) {
       setLoading(true)
       try {
-        setTraj(await api.taskTrajectory("current", task.id))
+        setTraj(await api.taskTrajectory(runId, task.id))
       } catch {
         /* no trajectory recorded (e.g. shell/mock) */
       } finally {
@@ -258,7 +264,142 @@ function TrajectoryReceipt({ task }: { task: TaskState }) {
   )
 }
 
-export function TaskRow({ task }: { task: TaskState }) {
+const fmtKB = (b: number) => `${(b / 1024).toFixed(1)} KB`
+const fmtTokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`)
+/** Cap visible ref chips so a long memory-topic / skill name can't widen the row;
+ *  the rest collapse into a single hover-listable "+N" chip. */
+const MAX_REF_CHIPS = 6
+
+/** F-116: read-only prompt context-layer manifest — provenance + size only,
+ *  never raw bodies. Missing manifest (verify/shell, or a task that never
+ *  dispatched) is treated as an empty state, not an error. */
+function ContextReceipt({ task, runId }: { task: TaskState; runId: string }) {
+  const [manifest, setManifest] = useState<TaskContextManifest | null>(null)
+  const [show, setShow] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const [error, setError] = useState(false)
+  // Only agent tasks ever get a context manifest.
+  if (task.kind !== "agent") return null
+
+  const toggle = async () => {
+    const next = !show
+    setShow(next)
+    if (next && !loaded) {
+      setLoading(true)
+      setError(false)
+      try {
+        setManifest(await api.taskContext(runId, task.id))
+        setLoaded(true)
+      } catch {
+        setError(true)
+      } finally {
+        setLoading(false)
+      }
+    }
+  }
+
+  return (
+    <div className="text-[11px]">
+      <button
+        onClick={toggle}
+        className="inline-flex items-center gap-1 text-ink-dim hover:text-ink"
+      >
+        <Layers size={11} />
+        {show ? t("context.hide") : t("context.show")}
+      </button>
+      {show && (
+        <div className="mt-1">
+          {loading && <div className="text-ink-faint">{t("context.loading")}</div>}
+          {error && <div className="text-status-warning/80">{t("context.error")}</div>}
+          {loaded &&
+            !error &&
+            (manifest === null ? (
+              <div className="text-ink-faint">{t("context.none")}</div>
+            ) : (
+              <>
+                <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-ink-mute">
+                  <span>{t("context.layers", { n: manifest.layers.length })}</span>
+                  <span className="font-mono text-ink-faint">
+                    ~{fmtTokens(manifest.estimated_input_tokens)} tok
+                  </span>
+                  <span className="font-mono text-ink-faint">
+                    {fmtKB(manifest.total_context_bytes)}
+                  </span>
+                  {manifest.role && (
+                    <span className="font-mono text-ink-faint">role/{manifest.role}</span>
+                  )}
+                  {manifest.resolved_agent_profile && (
+                    <span className="font-mono text-ink-faint">
+                      profile/{manifest.resolved_agent_profile}
+                    </span>
+                  )}
+                </div>
+                <ol className="max-h-72 space-y-0.5 overflow-auto rounded bg-bg-inset p-2 text-[10px] leading-relaxed">
+                  {manifest.layers.map((l) => (
+                    <li
+                      key={l.order}
+                      className={`flex flex-wrap items-center gap-x-2 gap-y-0.5 ${
+                        l.omitted ? "opacity-50" : ""
+                      }`}
+                    >
+                      <span className="shrink-0 font-mono text-ink-dim">{l.order}</span>
+                      <span className="shrink-0 font-mono text-ink-mute">{l.kind}</span>
+                      <span className="text-ink-faint">{l.label}</span>
+                      {!l.omitted && (
+                        <span className="font-mono text-ink-faint">
+                          {l.item_count}× · {fmtKB(l.content_bytes)} · ~
+                          {fmtTokens(l.estimated_tokens)}t
+                        </span>
+                      )}
+                      {l.truncated && (
+                        <span className="rounded bg-amber-500/10 px-1 text-status-warning/80">
+                          {t("context.truncated")}
+                        </span>
+                      )}
+                      {l.omitted && (
+                        <span className="rounded bg-bg-hover px-1 text-ink-faint">
+                          {t("context.omitted")}
+                          {l.omitted_reason ? `: ${l.omitted_reason}` : ""}
+                        </span>
+                      )}
+                      {l.refs.slice(0, MAX_REF_CHIPS).map((r, i) => {
+                        const full = `${r.kind}:${r.ref}${
+                          r.count != null ? `·${r.count}` : ""
+                        }`
+                        return (
+                          <span
+                            key={i}
+                            title={full}
+                            className="max-w-[14rem] truncate rounded border border-line bg-bg-panel px-1 font-mono text-ink-faint"
+                          >
+                            {full}
+                          </span>
+                        )
+                      })}
+                      {l.refs.length > MAX_REF_CHIPS && (
+                        <span
+                          title={l.refs
+                            .slice(MAX_REF_CHIPS)
+                            .map((r) => `${r.kind}:${r.ref}`)
+                            .join("\n")}
+                          className="rounded border border-line bg-bg-panel px-1 font-mono text-ink-dim"
+                        >
+                          +{l.refs.length - MAX_REF_CHIPS}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              </>
+            ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function TaskRow({ task, runId }: { task: TaskState; runId: string }) {
   const [open, setOpen] = useState(false)
   const [log, setLog] = useState<string>("")
   const esRef = useRef<EventSource | null>(null)
@@ -270,7 +411,7 @@ export function TaskRow({ task }: { task: TaskState }) {
       return
     }
     setLog("")
-    const url = `/api/logs/current/${encodeURIComponent(task.id)}/stream`
+    const url = `/api/logs/${encodeURIComponent(runId)}/${encodeURIComponent(task.id)}/stream`
     const es = new EventSource(url)
     es.addEventListener("log", (e: MessageEvent) => setLog(e.data))
     es.addEventListener("delta", (e: MessageEvent) =>
@@ -280,7 +421,7 @@ export function TaskRow({ task }: { task: TaskState }) {
     return () => {
       es.close()
     }
-  }, [open, task.id])
+  }, [open, runId, task.id])
 
   return (
     <div>
@@ -319,20 +460,22 @@ export function TaskRow({ task }: { task: TaskState }) {
           </span>
         )}
         {task.requires_approval_after && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/20 inline-flex items-center gap-1">
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-status-warning border border-amber-500/20 inline-flex items-center gap-1">
             <Pause size={9} /> gate
           </span>
         )}
         {task.risk_level === "high" && (
           <span
-            className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-300 border border-red-500/25 inline-flex items-center gap-1"
+            className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-status-danger border border-red-500/25 inline-flex items-center gap-1"
             title={t("risk.high.title")}
           >
             <AlertTriangle size={9} /> {t("risk.high")}
           </span>
         )}
 
-        {task.status === "awaiting_approval" && <ApprovalButtons task={task.id} />}
+        {task.status === "awaiting_approval" && (
+          <ApprovalButtons task={task.id} runId={runId} />
+        )}
 
         <span className={`text-[10px] px-2 py-0.5 rounded ${statusBadge(task.status)}`}>
           {task.status}
@@ -373,7 +516,7 @@ export function TaskRow({ task }: { task: TaskState }) {
             target="_blank"
             rel="noreferrer"
             onClick={(e) => e.stopPropagation()}
-            className="text-[10px] text-blue-400 hover:text-blue-300 inline-flex items-center gap-0.5"
+            className="text-[10px] text-accent hover:text-accent-soft inline-flex items-center gap-0.5"
           >
             Draft PR <ExternalLink size={9} />
           </a>
@@ -385,7 +528,7 @@ export function TaskRow({ task }: { task: TaskState }) {
           {(task.memory_used?.length || task.skills_triggered?.length) && (
             <div className="flex flex-wrap items-center gap-2 text-[11px]">
               {task.memory_used && task.memory_used.length > 0 && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-300 border border-blue-500/20">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 text-status-info border border-blue-500/20">
                   <Brain size={10} />
                   memory:{" "}
                   <span className="font-mono">
@@ -408,7 +551,7 @@ export function TaskRow({ task }: { task: TaskState }) {
             <div className="flex flex-wrap items-center gap-2 text-[11px]">
               {task.resolved_agent_profile && (
                 <span
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-status-warning border border-amber-500/20"
                   title="F-114 specialist agent profile that supplied the writer"
                 >
                   <User size={10} />
@@ -418,7 +561,7 @@ export function TaskRow({ task }: { task: TaskState }) {
               )}
               {task.resolved_review_profile && (
                 <span
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-status-warning border border-amber-500/20"
                   title="F-114 specialist agent profile that supplied the reviewer"
                 >
                   <Eye size={10} />
@@ -428,8 +571,9 @@ export function TaskRow({ task }: { task: TaskState }) {
               )}
             </div>
           )}
-          <ChangesReceipt task={task} />
-          <TrajectoryReceipt task={task} />
+          <ChangesReceipt task={task} runId={runId} />
+          <TrajectoryReceipt task={task} runId={runId} />
+          <ContextReceipt task={task} runId={runId} />
           {(task.workspace_path || task.worktree_path) && (
             <div className="space-y-1 text-[11px] text-ink-faint font-mono">
               {task.workspace_path && <div>workspace: {task.workspace_path}</div>}
@@ -440,7 +584,7 @@ export function TaskRow({ task }: { task: TaskState }) {
           {task.error && (
             <p className="mt-2 text-xs">
               <span className="text-red-400">error: </span>
-              <span className="text-red-300">{task.error}</span>
+              <span className="text-status-danger">{task.error}</span>
             </p>
           )}
         </div>
@@ -478,11 +622,11 @@ function textColor(s: string) {
 function statusBadge(s: string) {
   return (
     {
-      done: "bg-emerald-500/15 text-emerald-300 border border-emerald-500/20",
-      running: "bg-blue-500/15 text-blue-300 border border-blue-500/20 animate-pulse",
-      failed: "bg-red-500/15 text-red-300 border border-red-500/20",
+      done: "bg-emerald-500/15 text-status-success border border-emerald-500/20",
+      running: "bg-blue-500/15 text-status-info border border-blue-500/20 animate-pulse",
+      failed: "bg-red-500/15 text-status-danger border border-red-500/20",
       pending: "bg-bg-inset text-ink-dim border border-line",
-      awaiting_approval: "bg-amber-500/15 text-amber-300 border border-amber-500/20",
+      awaiting_approval: "bg-amber-500/15 text-status-warning border border-amber-500/20",
       skipped: "bg-bg-inset text-ink-faint border border-line",
       cancelled: "bg-bg-inset text-ink-faint border border-line",
     } as Record<string, string>
@@ -528,7 +672,7 @@ function roleBadge(role: string): string {
     return "bg-indigo-500/10 text-indigo-300 border-indigo-500/25"
   }
   if (role === "qa") {
-    return "bg-emerald-500/10 text-emerald-300 border-emerald-500/25"
+    return "bg-emerald-500/10 text-status-success border-emerald-500/25"
   }
   return "bg-bg-inset text-ink-dim border border-line"
 }

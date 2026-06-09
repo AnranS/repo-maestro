@@ -106,7 +106,7 @@ export function RunsSidebar({
                     {r.run_id.slice(0, 16)}
                   </span>
                   {isLive && (
-                    <span className="rounded bg-blue-500/15 px-1 text-[9px] text-blue-300">live</span>
+                    <span className="rounded bg-blue-500/15 px-1 text-[9px] text-status-info">live</span>
                   )}
                   <span className={`ml-auto text-[10px] ${statusColor(r.status)}`}>
                     {r.status}

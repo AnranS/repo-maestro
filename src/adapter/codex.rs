@@ -62,15 +62,23 @@ impl AgentAdapter for CodexAdapter {
         // Own process group so a timeout SIGKILLs the whole subtree (codex plus
         // every tool it spawned), not just the direct child.
         crate::proc::isolate_process_group(&mut cmd);
+        // F-136b1: rebuild the child env from an allowlist (off by default) so
+        // unrelated env-borne secrets are not handed to the untrusted agent.
+        if task.harden.scrub_env {
+            crate::runtime_harden::apply_env_scrub(
+                &mut cmd,
+                self.name(),
+                &task.harden.extra_allow_env,
+            );
+        }
 
         tracing::debug!(?task.task_id, ?task.workspace, "spawning codex exec --json");
 
-        let mut log_file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&task.log_path)
-            .await
-            .with_context(|| format!("open log file {:?}", task.log_path))?;
+        // F-136b1: cap the task log (0 = unbounded passthrough, the default).
+        let mut log_file =
+            crate::runtime_harden::CappedLog::open(&task.log_path, task.harden.max_task_log_bytes)
+                .await
+                .with_context(|| format!("open log file {:?}", task.log_path))?;
 
         log_file
             .write_all(
@@ -113,22 +121,12 @@ impl AgentAdapter for CodexAdapter {
         let stderr = child.stderr.take().context("codex stderr pipe missing")?;
 
         let stderr_log_path = task.log_path.clone();
+        // F-136b1 B3: the shared pump hard-bounds stderr (disk + memory via a
+        // chunked drain), marks when it caps, and reads to the child's real EOF
+        // so the pipe never blocks the child.
+        let stderr_cap = task.harden.max_task_log_bytes;
         let stderr_pump = tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            let mut log = match tokio::fs::OpenOptions::new()
-                .append(true)
-                .open(&stderr_log_path)
-                .await
-            {
-                Ok(f) => f,
-                Err(_) => return,
-            };
-            while let Ok(Some(line)) = lines.next_line().await {
-                let red = crate::schema::redaction::redact_secret_blob(&line);
-                let _ = log.write_all(b"[stderr] ").await;
-                let _ = log.write_all(red.as_bytes()).await;
-                let _ = log.write_all(b"\n").await;
-            }
+            crate::runtime_harden::pump_stderr_capped(stderr, &stderr_log_path, stderr_cap).await;
         });
 
         let mut trajectory = super::trajectory_writer_for(&task);
@@ -141,13 +139,20 @@ impl AgentAdapter for CodexAdapter {
             &task.task_id,
             log_refs.clone(),
         );
-        let parsed = match tokio::time::timeout(task.timeout, stream_fut).await {
+        let outcome = tokio::time::timeout(task.timeout, stream_fut).await;
+        // On timeout, tear down the whole subtree before finalizing the log.
+        if outcome.is_err() {
+            if let Some(pid) = child_pid {
+                crate::proc::kill_process_group(pid);
+            }
+            stderr_pump.abort();
+        }
+        // F-136b1 B2: finalize on EVERY path (success / parse-error / timeout) so
+        // a truncated log always gets its marker + tail — never silent. Idempotent.
+        let _ = log_file.finalize().await;
+        let parsed = match outcome {
             Ok(result) => result?,
             Err(_) => {
-                if let Some(pid) = child_pid {
-                    crate::proc::kill_process_group(pid);
-                }
-                stderr_pump.abort();
                 if let Some(writer) = trajectory.as_mut() {
                     super::append_trajectory_event(
                         writer,
@@ -256,7 +261,7 @@ fn codex_policy_note(allow: &crate::modes::AllowedTools) -> String {
 
 async fn drive_json_stream<R>(
     stdout: R,
-    log: &mut tokio::fs::File,
+    log: &mut crate::runtime_harden::CappedLog,
     mut trajectory: Option<&mut crate::scheduler::trajectory::TrajectoryWriter>,
     task_id: &str,
     log_refs: BTreeMap<String, crate::schema::artifacts::ArtifactRef>,
@@ -631,7 +636,9 @@ mod tests {
     async fn writes_codex_trajectory_for_tool_usage_and_final_events() {
         let temp = tempfile::tempdir().unwrap();
         let log_path = temp.path().join("codex.log");
-        let mut log = tokio::fs::File::create(&log_path).await.unwrap();
+        let mut log = crate::runtime_harden::CappedLog::open(&log_path, 0)
+            .await
+            .unwrap();
         let mut writer = crate::scheduler::trajectory::TrajectoryWriter::new(
             temp.path(),
             "run-1",
@@ -690,7 +697,9 @@ mod tests {
     async fn writes_codex_unknown_events_as_output_markers_with_log_ref() {
         let temp = tempfile::tempdir().unwrap();
         let log_path = temp.path().join("codex.log");
-        let mut log = tokio::fs::File::create(&log_path).await.unwrap();
+        let mut log = crate::runtime_harden::CappedLog::open(&log_path, 0)
+            .await
+            .unwrap();
         let mut writer = crate::scheduler::trajectory::TrajectoryWriter::new(
             temp.path(),
             "run-1",
@@ -735,7 +744,9 @@ mod tests {
     async fn writes_codex_parse_errors_as_partial_redaction_events() {
         let temp = tempfile::tempdir().unwrap();
         let log_path = temp.path().join("codex.log");
-        let mut log = tokio::fs::File::create(&log_path).await.unwrap();
+        let mut log = crate::runtime_harden::CappedLog::open(&log_path, 0)
+            .await
+            .unwrap();
         let mut writer = crate::scheduler::trajectory::TrajectoryWriter::new(
             temp.path(),
             "run-1",
@@ -809,6 +820,7 @@ mod tests {
             model: None,
             role_prelude: None,
             allowed_tools: Default::default(),
+            harden: Default::default(),
         };
 
         let adapter = CodexAdapter {

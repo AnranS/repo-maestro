@@ -45,10 +45,10 @@ export function ProjectMemoryPanel({ projectName, onClose }: Props) {
   }, [projectName])
 
   return (
-    <aside className="absolute right-0 top-0 bottom-0 w-[26rem] max-w-[90vw] bg-bg-panel border-l border-line shadow-2xl flex flex-col z-30">
+    <aside className="absolute right-0 top-0 bottom-0 w-[26rem] max-w-[90vw] bg-bg-panel border-l border-line shadow-overlay flex flex-col z-drawer">
       <header className="flex items-center justify-between px-4 py-3 border-b border-line">
         <div className="flex items-center gap-2 min-w-0">
-          <Brain size={14} className="text-blue-300 shrink-0" />
+          <Brain size={14} className="text-accent shrink-0" />
           <h2 className="text-sm font-semibold truncate" title={projectName}>
             {projectName}
           </h2>
@@ -68,7 +68,7 @@ export function ProjectMemoryPanel({ projectName, onClose }: Props) {
           <p className="p-4 text-xs text-ink-faint">loading…</p>
         )}
         {err && (
-          <p className="m-4 text-xs text-red-300 bg-red-500/10 border border-red-500/30 rounded px-2.5 py-2 inline-flex items-start gap-2">
+          <p className="m-4 text-xs text-status-danger bg-red-500/10 border border-red-500/30 rounded px-2.5 py-2 inline-flex items-start gap-2">
             <AlertCircle size={12} className="mt-0.5 shrink-0" />
             {err}
           </p>
@@ -137,7 +137,7 @@ function Identity({ view }: { view: ProjectMemoryView }) {
     <div className="px-4 py-3 border-b border-line/60 space-y-1.5 text-xs">
       <div className="flex items-center gap-2">
         {view.role && (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-200 border border-blue-500/30 text-[10px]">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-500/15 text-status-info border border-blue-500/30 text-[10px]">
             {view.role}
           </span>
         )}
@@ -175,7 +175,7 @@ function Section({
 }) {
   return (
     <section className="border-b border-line/60">
-      <header className="flex items-center gap-1.5 px-4 py-2 text-[10px] uppercase tracking-wider text-ink-faint sticky top-0 bg-bg-panel z-10">
+      <header className="flex items-center gap-1.5 px-4 py-2 text-[10px] uppercase tracking-wider text-ink-faint sticky top-0 bg-bg-panel z-sticky">
         {icon}
         <span>{label}</span>
       </header>
@@ -201,10 +201,10 @@ function Contracts({
     <div className="space-y-1.5 text-[11px]">
       {contracts.provides && (
         <div className="flex items-start gap-1.5">
-          <ArrowUpRight size={10} className="mt-0.5 text-emerald-300 shrink-0" />
+          <ArrowUpRight size={10} className="mt-0.5 text-status-success shrink-0" />
           <div>
             <span className="text-ink-faint">provides </span>
-            <code className="text-emerald-300/90 font-mono">
+            <code className="text-status-success/90 font-mono">
               {contracts.provides}
             </code>
           </div>
@@ -243,18 +243,18 @@ function RunRow({ run }: { run: ProjectMemoryView["recent_runs"][number] }) {
   const status = run.status
   const cls =
     status === "done" && run.verified
-      ? "text-emerald-300"
+      ? "text-status-success"
       : status === "done"
-        ? "text-amber-300"
+        ? "text-status-warning"
         : status === "failed"
-          ? "text-red-300"
+          ? "text-status-danger"
           : "text-ink-dim"
   return (
     <div className="px-2 py-1.5 text-[11px] bg-bg-inset border border-line/60 rounded">
       <div className="flex items-center gap-1.5 mb-0.5">
         <span className={`text-[10px] font-mono ${cls}`}>{status}</span>
         {run.verified && (
-          <Check size={9} className="text-emerald-300" />
+          <Check size={9} className="text-status-success" />
         )}
         <code className="text-[10px] text-ink-faint font-mono ml-auto">
           {run.run_id.slice(0, 14)}

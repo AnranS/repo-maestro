@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from "react"
 import {
+  LayoutDashboard,
   MessageSquare,
   Layers,
   Sparkles,
@@ -7,18 +8,23 @@ import {
   Settings,
   Network,
   GitFork,
+  Package,
   BookOpen,
   ChevronDown,
+  Moon,
+  Sun,
 } from "lucide-react"
 import type { RunState, SessionMeta } from "../types"
 import type { Tab } from "../hooks/useHashTab"
 import type { RunTaskSummary } from "../hooks/useRunState"
 import { t } from "../i18n"
-import { taskStatusColor } from "./graph/tokens"
+import { statusToken } from "./ui/StatusChip"
 
 interface HeaderProps {
   tab: Tab
   setTab: (tab: Tab) => void
+  theme: "light" | "dark"
+  onToggleTheme: () => void
   sessions: SessionMeta[]
   runSummary: RunTaskSummary | null
   connected: boolean
@@ -31,6 +37,8 @@ interface HeaderProps {
 export function Header({
   tab,
   setTab,
+  theme,
+  onToggleTheme,
   sessions,
   runSummary,
   connected,
@@ -44,12 +52,8 @@ export function Header({
   return (
     <header className="shrink-0 border-b border-line bg-bg/95 backdrop-blur">
       <div className="flex min-h-12 items-center gap-3 px-3 py-2 sm:px-4">
-        <div className="flex w-[210px] shrink-0 items-center gap-2">
-          <img
-            src="/icon-512.png"
-            alt="maestro"
-            className="h-7 w-7 rounded-md shadow-[0_0_18px_rgba(59,130,246,0.18)]"
-          />
+        <div className="flex shrink-0 items-center gap-2 md:w-[210px]">
+          <img src="/icon-512.png" alt="maestro" className="h-7 w-7 rounded-md" />
           <div className="leading-tight">
             <div className="font-semibold tracking-tight">maestro</div>
             <div className="hidden text-[10px] uppercase tracking-wider text-ink-faint md:block">
@@ -59,6 +63,9 @@ export function Header({
         </div>
 
         <nav className="mx-auto flex min-w-0 max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-line bg-bg-inset p-1 scrollbar-thin">
+          <TabButton active={tab === "dashboard"} onClick={() => setTab("dashboard")} icon={<LayoutDashboard size={14} />}>
+            {t("tab.dashboard")}
+          </TabButton>
           <TabButton active={tab === "chat"} onClick={() => setTab("chat")} icon={<MessageSquare size={14} />}>
             {t("tab.chat")}
             {sessions.length > 0 && (
@@ -69,10 +76,10 @@ export function Header({
             {t("tab.tasks")}{" "}
             {runSummary && (runSummary.running > 0 || runSummary.failed > 0) && (
               <span
-                className={`ml-1 text-[10px] px-1.5 rounded ${
+                className={`ml-1 rounded px-1.5 text-[10px] ${
                   runSummary.failed > 0
-                    ? "bg-red-900/60 text-red-200"
-                    : "bg-blue-900/60 text-blue-200 animate-pulse"
+                    ? statusToken("failed").chip
+                    : `${statusToken("running").chip} animate-pulse`
                 }`}
               >
                 {runSummary.failed > 0
@@ -93,12 +100,23 @@ export function Header({
           <TabButton active={tab === "codegraph"} onClick={() => setTab("codegraph")} icon={<GitFork size={14} />}>
             {t("tab.codegraph")}
           </TabButton>
+          <TabButton active={tab === "deliveries"} onClick={() => setTab("deliveries")} icon={<Package size={14} />}>
+            {t("tab.deliveries")}
+          </TabButton>
           <TabButton active={tab === "docs"} onClick={() => setTab("docs")} icon={<BookOpen size={14} />}>
             {t("tab.docs")}
           </TabButton>
         </nav>
 
-        <div className="flex w-[210px] shrink-0 justify-end">
+        <div className="flex shrink-0 justify-end md:w-[210px]">
+          <button
+            onClick={onToggleTheme}
+            className="p-1 rounded text-ink-faint hover:text-ink hover:bg-bg-hover"
+            title={theme === "dark" ? "switch to light mode" : "switch to dark mode"}
+            aria-label={theme === "dark" ? "switch to light mode" : "switch to dark mode"}
+          >
+            {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
+          </button>
           <button
             onClick={onOpenSettings}
             className="p-1 rounded text-ink-faint hover:text-ink hover:bg-bg-hover"
@@ -135,16 +153,16 @@ export function Header({
           )}
           {runSummary && (
             <div className="hidden items-center gap-1.5 sm:flex">
-              <CountChip label={t("header.done")} value={runSummary.done} color={taskStatusColor("done")} />
-              <CountChip label={t("header.running")} value={runSummary.running} color={taskStatusColor("running")} />
-              <CountChip label={t("header.failed")} value={runSummary.failed} color={taskStatusColor("failed")} />
+              <CountChip label={t("header.done")} value={runSummary.done} status="done" />
+              <CountChip label={t("header.running")} value={runSummary.running} status="running" />
+              <CountChip label={t("header.failed")} value={runSummary.failed} status="failed" />
             </div>
           )}
           {state?.usage && <UsageBadge usage={state.usage} />}
         </div>
 
         {goalOpen && (
-          <div className="absolute left-3 right-3 top-full z-30 mt-1 rounded-lg border border-line bg-bg-panel p-3 text-sm leading-relaxed text-ink-dim shadow-2xl sm:left-4 sm:right-4">
+          <div className="absolute left-3 right-3 top-full z-popover mt-1 rounded-lg border border-line bg-bg-panel p-3 text-sm leading-relaxed text-ink-dim shadow-overlay sm:left-4 sm:right-4">
             {goalText}
           </div>
         )}
@@ -175,10 +193,10 @@ function TabButton(props: {
   )
 }
 
-function CountChip({ label, value, color }: { label: string; value: number; color: string }) {
+function CountChip({ label, value, status }: { label: string; value: number; status: string }) {
   return (
     <span className="inline-flex h-6 items-center gap-1.5 rounded-md border border-line bg-bg-inset px-2 text-ink-dim">
-      <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
+      <span className={`h-1.5 w-1.5 rounded-full ${statusToken(status).dot}`} />
       <span className="hidden text-ink-faint lg:inline">{label}</span>
       <span className="font-semibold text-ink">{value}</span>
     </span>
@@ -188,7 +206,7 @@ function CountChip({ label, value, color }: { label: string; value: number; colo
 function ConnectionChip({ connected }: { connected: boolean }) {
   return (
     <span className="inline-flex h-6 items-center gap-1.5 rounded-md border border-line bg-bg-inset px-2 text-ink-dim">
-      <span className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-emerald-400" : "bg-amber-400"}`} />
+      <span className={`h-1.5 w-1.5 rounded-full ${statusToken(connected ? "live" : "reconnecting").dot}`} />
       <span className="hidden md:inline">{connected ? t("header.live") : t("header.reconnecting")}</span>
     </span>
   )
@@ -199,13 +217,10 @@ function VerifyBadge({ state }: { state: RunState }) {
   const total = results.length
   const passed = results.filter((r) => r.passed).length
   const ok = state.verified === true
-  const cls = ok
-    ? "border-emerald-900/70 bg-emerald-900/25 text-emerald-300"
-    : "border-red-900/70 bg-red-900/25 text-red-300"
   const label = ok ? `✓ ${t("tasks.verified")}` : `${passed}/${total} ${t("tasks.acceptance")}`
   return (
     <span
-      className={`inline-flex h-6 items-center gap-1.5 rounded-md border px-2 ${cls}`}
+      className={`inline-flex h-6 items-center gap-1.5 rounded-md px-2 ${statusToken(ok ? "done" : "failed").chip}`}
       title={ok ? t("tasks.allAcceptancePassed") : t("tasks.acceptanceFailing", { n: total - passed })}
     >
       {label}
@@ -220,7 +235,7 @@ function UsageBadge({ usage }: { usage: { input_tokens: number; output_tokens: n
   const tokens = total > 1000 ? `${(total / 1000).toFixed(1)}k` : `${total}`
   return (
     <span
-      className="inline-flex h-6 items-baseline gap-1 rounded-md border border-amber-900/60 bg-amber-900/20 px-1.5 text-amber-200"
+      className="inline-flex h-6 items-baseline gap-1 rounded-md border border-amber-900/60 bg-amber-900/20 px-1.5 text-status-warning"
       title={`input ${usage.input_tokens} + output ${usage.output_tokens} tokens`}
     >
       {dollars && <span className="font-medium">{dollars}</span>}

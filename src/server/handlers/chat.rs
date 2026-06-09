@@ -5,9 +5,18 @@ use axum::{
     http::StatusCode,
     response::{sse::Event, IntoResponse, Json, Response, Sse},
 };
-use futures::stream::Stream;
 use std::convert::Infallible;
 use std::time::Duration;
+
+/// F-119: reject a malformed id at the boundary with a neutral `400` BEFORE any
+/// filesystem access or lookup, so an invalid id never becomes a 404 (looks like
+/// "not found") or a 500 (path-derived error). Returns `Some(response)` to short-
+/// circuit; `None` when the id is a safe single path component.
+fn reject_invalid_id(kind: &'static str, id: &str) -> Option<Response> {
+    crate::paths::validate_path_component(kind, id)
+        .err()
+        .map(|_| (StatusCode::BAD_REQUEST, format!("invalid {kind}")).into_response())
+}
 
 pub async fn chat_sessions_list() -> Response {
     match crate::chat::sessions::list_sessions() {
@@ -26,6 +35,9 @@ pub async fn chat_sessions_create() -> Response {
 }
 
 pub async fn chat_session_get(Path(id): Path<String>) -> Response {
+    if let Some(r) = reject_invalid_id("chat session id", &id) {
+        return r;
+    }
     match crate::chat::sessions::load(&id) {
         Ok(s) => Json(s).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "session not found").into_response(),
@@ -33,6 +45,9 @@ pub async fn chat_session_get(Path(id): Path<String>) -> Response {
 }
 
 pub async fn chat_session_delete(Path(id): Path<String>) -> Response {
+    if let Some(r) = reject_invalid_id("chat session id", &id) {
+        return r;
+    }
     match crate::chat::sessions::delete(&id) {
         Ok(()) => (StatusCode::NO_CONTENT, "").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
@@ -54,6 +69,9 @@ pub struct PatchSession {
 }
 
 pub async fn chat_session_patch(Path(id): Path<String>, body: Json<PatchSession>) -> Response {
+    if let Some(r) = reject_invalid_id("chat session id", &id) {
+        return r;
+    }
     let Ok(mut s) = crate::chat::sessions::load(&id) else {
         return (StatusCode::NOT_FOUND, "session not found").into_response();
     };
@@ -101,6 +119,9 @@ pub struct TagsPut {
 }
 
 pub async fn chat_session_tags_put(Path(id): Path<String>, body: Json<TagsPut>) -> Response {
+    if let Some(r) = reject_invalid_id("chat session id", &id) {
+        return r;
+    }
     let Ok(mut s) = crate::chat::sessions::load(&id) else {
         return (StatusCode::NOT_FOUND, "session not found").into_response();
     };
@@ -113,6 +134,9 @@ pub async fn chat_session_tags_put(Path(id): Path<String>, body: Json<TagsPut>) 
 }
 
 pub async fn chat_session_auto_tag(Path(id): Path<String>) -> Response {
+    if let Some(r) = reject_invalid_id("chat session id", &id) {
+        return r;
+    }
     let Ok(mut s) = crate::chat::sessions::load(&id) else {
         return (StatusCode::NOT_FOUND, "session not found").into_response();
     };
@@ -123,6 +147,9 @@ pub async fn chat_session_auto_tag(Path(id): Path<String>) -> Response {
 }
 
 pub async fn chat_session_compact(Path(id): Path<String>) -> Response {
+    if let Some(r) = reject_invalid_id("chat session id", &id) {
+        return r;
+    }
     let Ok(mut s) = crate::chat::sessions::load(&id) else {
         return (StatusCode::NOT_FOUND, "session not found").into_response();
     };
@@ -176,6 +203,9 @@ pub struct CurrentBody {
 }
 
 pub async fn chat_current_put(body: Json<CurrentBody>) -> Response {
+    if let Some(r) = reject_invalid_id("chat session id", &body.id) {
+        return r;
+    }
     if crate::chat::sessions::load(&body.id).is_err() {
         return (StatusCode::NOT_FOUND, "session not found").into_response();
     }
@@ -200,65 +230,78 @@ pub struct MessagesBody {
     /// maestro-action blocks). `exec` = full agency (default).
     #[serde(default)]
     mode: Option<String>,
+    /// F-119 idempotency key: stable across a retry of the same submission until
+    /// the turn reaches done/failed. A duplicate replays / refuses rather than
+    /// re-sending the user message + first-turn prelude.
+    #[serde(default)]
+    turn_id: Option<String>,
 }
 
-pub async fn chat_messages_post(
-    body: Json<MessagesBody>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    use tokio::sync::mpsc;
-
+pub async fn chat_messages_post(body: Json<MessagesBody>) -> Response {
+    use crate::chat::turn::TurnError;
     let MessagesBody {
         text,
         session_id,
         model,
         provider,
         mode,
+        turn_id,
     } = body.0;
 
-    // In plan mode, prepend a tight constraint to the user's message. We
-    // do this rather than threading through a new parameter to stream.rs
-    // because the constraint should appear in the message history (so the
-    // model remembers we asked for plan-only) — which is exactly what a
-    // user prefix does.
-    let text = match mode.as_deref() {
-        Some("plan") => format!(
-            "[plan mode] Please analyse and propose what you would do. Do NOT emit any `maestro-action` blocks; describe the actions in prose instead. The user will switch to exec mode when ready.\n\n{text}"
-        ),
-        _ => text,
-    };
-
-    let session = match session_id {
-        Some(id) => crate::chat::sessions::load(&id).unwrap_or_else(|_| {
-            let s = crate::chat::sessions::Session::new();
-            let _ = crate::chat::sessions::save(&s);
-            let _ = crate::chat::sessions::set_current(&s.id);
-            s
-        }),
-        None => crate::chat::sessions::ensure_current()
-            .unwrap_or_else(|_| crate::chat::sessions::Session::new()),
-    };
-    let _ = crate::chat::sessions::set_current(&session.id);
-
-    let (tx, mut rx) = mpsc::channel::<crate::chat::StreamEvent>(64);
-
-    tokio::spawn(async move {
-        if let Err(e) = crate::chat::stream::send_streaming_with_options(
-            session,
-            text,
-            model,
-            provider,
-            tx.clone(),
-        )
-        .await
-        {
-            let _ = tx
-                .send(crate::chat::StreamEvent::Error {
-                    message: format!("{e:#}"),
-                })
-                .await;
+    // F-119: go through the shared ownership guard. Guard failures (invalid id /
+    // busy / turn dedup) return 400/409 BEFORE any stream starts; a duplicate done
+    // turn replays the persisted assistant; the success path wraps the same SSE.
+    let rx = match crate::chat::turn::start_chat_turn(crate::chat::turn::ChatTurnRequest {
+        session_id,
+        text,
+        model,
+        provider,
+        mode,
+        turn_id,
+    })
+    .await
+    {
+        Ok(rx) => rx,
+        Err(TurnError::InvalidId) => {
+            return (StatusCode::BAD_REQUEST, "invalid chat session id").into_response();
         }
-    });
+        Err(TurnError::Busy) => {
+            return (
+                StatusCode::CONFLICT,
+                "session is busy in another turn or action",
+            )
+                .into_response();
+        }
+        Err(TurnError::TurnRunning) => {
+            return (StatusCode::CONFLICT, "turn already running").into_response();
+        }
+        Err(TurnError::TurnPayloadMismatch) => {
+            return (
+                StatusCode::CONFLICT,
+                "turn id reused with a different request",
+            )
+                .into_response();
+        }
+        Err(TurnError::TurnNotRetriable) => {
+            return (
+                StatusCode::CONFLICT,
+                "turn is not retriable; start a new turn",
+            )
+                .into_response();
+        }
+        Err(TurnError::Internal(e)) => {
+            // The detail (control corrupt / save / lock error) can quote a path —
+            // log it server-side; the HTTP body stays neutral.
+            tracing::warn!(error = ?e, "chat turn failed before stream");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "chat turn failed before stream",
+            )
+                .into_response();
+        }
+    };
 
+    let mut rx = rx;
     let stream = async_stream::stream! {
         while let Some(ev) = rx.recv().await {
             let (event_name, data) = match &ev {
@@ -272,11 +315,13 @@ pub async fn chat_messages_post(
         }
     };
 
-    Sse::new(stream).keep_alive(
-        axum::response::sse::KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("ping"),
-    )
+    Sse::new(stream)
+        .keep_alive(
+            axum::response::sse::KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("ping"),
+        )
+        .into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -289,69 +334,122 @@ pub async fn chat_action_post(
     Path((session_id, action_id)): Path<(String, String)>,
     body: Option<Json<ActionDecision>>,
 ) -> Response {
-    let Ok(mut session) = crate::chat::sessions::load(&session_id) else {
-        return (StatusCode::NOT_FOUND, "session not found").into_response();
-    };
-
     let decision = body
         .and_then(|b| b.0.decision)
         .unwrap_or_else(|| "approve".into());
 
-    let mut found: Option<(usize, usize)> = None;
-    for (mi, m) in session.messages.iter().enumerate() {
-        for (ai, a) in m.actions.iter().enumerate() {
-            if a.id == action_id {
-                found = Some((mi, ai));
-                break;
-            }
+    // F-119: actions run through the shared ownership guard (approve acquires the
+    // session for the duration; a busy session refuses with 409).
+    match crate::chat::turn::run_chat_action_with_owner(&session_id, &action_id, &decision).await {
+        Ok(act) => Json(act).into_response(),
+        Err(crate::chat::turn::ActionError::InvalidId) => {
+            (StatusCode::BAD_REQUEST, "invalid chat id").into_response()
         }
-        if found.is_some() {
-            break;
+        Err(crate::chat::turn::ActionError::SessionNotFound) => {
+            (StatusCode::NOT_FOUND, "session not found").into_response()
         }
-    }
-    let Some((mi, ai)) = found else {
-        return (StatusCode::NOT_FOUND, "action not found").into_response();
-    };
-
-    if decision == "reject" {
-        session.messages[mi].actions[ai].status = Some(crate::chat::ActionStatus::Rejected);
-        let _ = crate::chat::sessions::save(&session);
-        return Json(&session.messages[mi].actions[ai]).into_response();
-    }
-
-    session.messages[mi].actions[ai].status = Some(crate::chat::ActionStatus::Running);
-    let _ = crate::chat::sessions::save(&session);
-    let action = session.messages[mi].actions[ai].clone();
-    let sid_owned = session_id.clone();
-
-    let res = crate::chat::actions::execute_action_with_session(&action, Some(&sid_owned)).await;
-
-    let mut session = crate::chat::sessions::load(&session_id).unwrap_or(session);
-    if let Some(act) = session
-        .messages
-        .iter_mut()
-        .flat_map(|m| m.actions.iter_mut())
-        .find(|a| a.id == action_id)
-    {
-        match &res {
-            Ok(out) => {
-                act.status = Some(crate::chat::ActionStatus::Done);
-                act.output = Some(out.clone());
-            }
-            Err(e) => {
-                act.status = Some(crate::chat::ActionStatus::Failed);
-                act.output = Some(format!("{e:#}"));
-            }
+        Err(crate::chat::turn::ActionError::ActionNotFound) => {
+            (StatusCode::NOT_FOUND, "action not found").into_response()
+        }
+        Err(crate::chat::turn::ActionError::Busy) => (
+            StatusCode::CONFLICT,
+            "session is busy in another turn or action",
+        )
+            .into_response(),
+        Err(crate::chat::turn::ActionError::Internal(e)) => {
+            tracing::warn!(error = ?e, "chat action failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "chat action failed").into_response()
         }
     }
-    let _ = crate::chat::sessions::save(&session);
+}
 
-    let act = session
-        .messages
-        .iter()
-        .flat_map(|m| m.actions.iter())
-        .find(|a| a.id == action_id)
-        .cloned()
-        .unwrap_or(action);
-    Json(act).into_response()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn invalid_session_id_is_400_not_404_or_500() {
+        // F-119 N1: an unsafe id is a 400 at the boundary (before any FS), not a
+        // 404 (looks "not found") or a 500 (path-derived error). Covers
+        // get / delete / current / action.
+        for bad in ["../escape", "a/b", ".."] {
+            assert_eq!(
+                chat_session_get(Path(bad.to_string())).await.status(),
+                StatusCode::BAD_REQUEST,
+                "get {bad:?}"
+            );
+            assert_eq!(
+                chat_session_delete(Path(bad.to_string())).await.status(),
+                StatusCode::BAD_REQUEST,
+                "delete {bad:?}"
+            );
+            assert_eq!(
+                chat_current_put(Json(CurrentBody {
+                    id: bad.to_string()
+                }))
+                .await
+                .status(),
+                StatusCode::BAD_REQUEST,
+                "current {bad:?}"
+            );
+            assert_eq!(
+                chat_action_post(Path((bad.to_string(), "a-1".to_string())), None)
+                    .await
+                    .status(),
+                StatusCode::BAD_REQUEST,
+                "action session {bad:?}"
+            );
+        }
+        // a malformed action id is also a 400 (valid session id, bad action id).
+        assert_eq!(
+            chat_action_post(Path(("s-ok".to_string(), "../a".to_string())), None)
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn pre_stream_internal_error_500_body_is_neutral() {
+        // N3: a corrupt control file makes start_chat_turn fail before the stream;
+        // the 500 body must be a fixed neutral string, never the raw error (which
+        // can quote a path).
+        use axum::body::to_bytes;
+        let dir = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("MAESTRO_WORKSPACE_ROOT", dir.path());
+        }
+        std::fs::create_dir_all(dir.path().join(".maestro")).unwrap();
+
+        let s = crate::chat::sessions::Session::new();
+        crate::chat::sessions::save(&s).unwrap();
+        std::fs::write(
+            crate::chat::control::control_path(&s.id).unwrap(),
+            "{not json",
+        )
+        .unwrap();
+
+        let resp = chat_messages_post(Json(MessagesBody {
+            text: "hi".into(),
+            session_id: Some(s.id.clone()),
+            model: None,
+            provider: None,
+            mode: None,
+            turn_id: None,
+        }))
+        .await;
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert_eq!(body, "chat turn failed before stream");
+        assert!(
+            !body.contains('/'),
+            "neutral body must not contain a path: {body}"
+        );
+
+        unsafe {
+            std::env::remove_var("MAESTRO_WORKSPACE_ROOT");
+        }
+    }
 }

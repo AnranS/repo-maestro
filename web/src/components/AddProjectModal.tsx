@@ -68,17 +68,17 @@ export function AddProjectModal({ onClose, onCreated, existing }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+      className="fixed inset-0 z-modal bg-black/60 flex items-center justify-center p-4"
       onClick={onClose}
     >
       <form
-        className="bg-bg-panel border border-line rounded-xl w-full max-w-xl shadow-2xl"
+        className="bg-bg-panel border border-line rounded-lg w-full max-w-xl shadow-overlay"
         onClick={(e) => e.stopPropagation()}
         onSubmit={submit}
       >
         <div className="flex items-center justify-between px-5 py-3 border-b border-line">
           <div className="flex items-center gap-2">
-            <FolderPlus size={14} className="text-blue-300" />
+            <FolderPlus size={14} className="text-accent" />
             <h2 className="text-sm font-semibold">Register a project</h2>
           </div>
           <button
@@ -100,11 +100,11 @@ export function AddProjectModal({ onClose, onCreated, existing }: Props) {
               className={`w-full bg-bg-inset border rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none ${
                 nameTaken
                   ? "border-red-500/60 focus:border-red-500"
-                  : "border-line focus:border-blue-600"
+                  : "border-line focus:border-accent"
               }`}
             />
             {nameTaken && (
-              <p className="mt-1 text-[11px] text-red-300">
+              <p className="mt-1 text-[11px] text-status-danger">
                 a project named `{form.name.trim()}` already exists
               </p>
             )}
@@ -119,7 +119,7 @@ export function AddProjectModal({ onClose, onCreated, existing }: Props) {
                 value={form.path}
                 onChange={(e) => set("path", e.target.value)}
                 placeholder="~/work/notes-api"
-                className="flex-1 min-w-0 bg-bg-inset border border-line rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-blue-600"
+                className="flex-1 min-w-0 bg-bg-inset border border-line rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-accent"
               />
               <button
                 type="button"
@@ -138,7 +138,7 @@ export function AddProjectModal({ onClose, onCreated, existing }: Props) {
               <select
                 value={form.type ?? ""}
                 onChange={(e) => set("type", e.target.value)}
-                className="w-full bg-bg-inset border border-line rounded px-2.5 py-1.5 text-sm focus:outline-none focus:border-blue-600"
+                className="w-full bg-bg-inset border border-line rounded px-2.5 py-1.5 text-sm focus:outline-none focus:border-accent"
               >
                 {TYPES.map((t) => (
                   <option key={t || "_"} value={t}>
@@ -152,7 +152,7 @@ export function AddProjectModal({ onClose, onCreated, existing }: Props) {
               <select
                 value={form.agent ?? ""}
                 onChange={(e) => set("agent", e.target.value)}
-                className="w-full bg-bg-inset border border-line rounded px-2.5 py-1.5 text-sm focus:outline-none focus:border-blue-600"
+                className="w-full bg-bg-inset border border-line rounded px-2.5 py-1.5 text-sm focus:outline-none focus:border-accent"
               >
                 {AGENTS.map((a) => (
                   <option key={a || "_"} value={a}>
@@ -168,7 +168,7 @@ export function AddProjectModal({ onClose, onCreated, existing }: Props) {
               value={stackText}
               onChange={(e) => setStackText(e.target.value)}
               placeholder="python fastapi"
-              className="w-full bg-bg-inset border border-line rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-blue-600"
+              className="w-full bg-bg-inset border border-line rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-accent"
             />
           </Field>
 
@@ -180,7 +180,7 @@ export function AddProjectModal({ onClose, onCreated, existing }: Props) {
               value={memoryText}
               onChange={(e) => setMemoryText(e.target.value)}
               placeholder="api schema"
-              className="w-full bg-bg-inset border border-line rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-blue-600"
+              className="w-full bg-bg-inset border border-line rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-accent"
             />
           </Field>
 
@@ -193,7 +193,7 @@ export function AddProjectModal({ onClose, onCreated, existing }: Props) {
                 value={form.provides ?? ""}
                 onChange={(e) => set("provides", e.target.value)}
                 placeholder="schemas/openapi.yaml"
-                className="w-full bg-bg-inset border border-line rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-blue-600"
+                className="w-full bg-bg-inset border border-line rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-accent"
               />
             </Field>
 
@@ -205,13 +205,13 @@ export function AddProjectModal({ onClose, onCreated, existing }: Props) {
                 value={form.consumes ?? ""}
                 onChange={(e) => set("consumes", e.target.value)}
                 placeholder="schemas/openapi.yaml"
-                className="w-full bg-bg-inset border border-line rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-blue-600"
+                className="w-full bg-bg-inset border border-line rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:border-accent"
               />
             </Field>
           </div>
 
           {err && (
-            <p className="text-xs text-red-300 bg-red-500/10 border border-red-500/30 rounded px-2.5 py-1.5">
+            <p className="text-xs text-status-danger bg-red-500/10 border border-red-500/30 rounded px-2.5 py-1.5">
               {err}
             </p>
           )}

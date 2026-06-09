@@ -96,7 +96,7 @@ export function SkillDetail({
               <button
                 onClick={save}
                 disabled={busy}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-200 border border-emerald-500/30"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs bg-emerald-500/15 hover:bg-emerald-500/25 text-status-success border border-emerald-500/30"
               >
                 <Save size={11} /> save
               </button>
@@ -120,7 +120,7 @@ export function SkillDetail({
               </button>
               <button
                 onClick={remove}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-red-300 hover:bg-red-500/10 border border-line hover:border-red-500/30"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs text-status-danger hover:bg-red-500/10 border border-line hover:border-red-500/30"
               >
                 <Trash2 size={11} />
               </button>

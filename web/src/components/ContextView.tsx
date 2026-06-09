@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useMemo, useState } from "react"
-import { Brain, Globe, Box, Plus, Sparkles, Filter } from "lucide-react"
+import { Brain, Globe, Box, Plus, Sparkles, Filter, Layers } from "lucide-react"
 import { api } from "../api"
 import type { MemoryIndex, ProjectMemoryView, SkillsByScope } from "../types"
 import { Group, Item, Section } from "./context/Sidebar"
@@ -15,7 +15,7 @@ import { Group, Item, Section } from "./context/Sidebar"
  *   - `./context/CreatorDialogs` — modal flows for "+ new" actions
  */
 
-type SelectionKind = "memory" | "skill"
+type SelectionKind = "memory" | "skill" | "inventory"
 interface Selection {
   kind: SelectionKind
   scope: string // memory: topic; skill: scope dir
@@ -27,6 +27,11 @@ const MemoryDetail = lazy(() =>
 )
 const SkillDetail = lazy(() =>
   import("./context/SkillDetail").then((m) => ({ default: m.SkillDetail })),
+)
+const SkillInventoryPanel = lazy(() =>
+  import("./context/SkillInventoryPanel").then((m) => ({
+    default: m.SkillInventoryPanel,
+  })),
 )
 const CreateMemoryDialog = lazy(() =>
   import("./context/CreatorDialogs").then((m) => ({
@@ -143,7 +148,7 @@ export function ContextView() {
             <select
               value={projectFilter ?? ""}
               onChange={(e) => setProjectFilter(e.target.value || null)}
-              className="flex-1 bg-bg-inset border border-line rounded px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:border-blue-600"
+              className="flex-1 bg-bg-inset border border-line rounded px-1.5 py-0.5 text-[11px] font-mono focus:outline-none focus:border-accent"
             >
               <option value="">all projects</option>
               {projects.map((p) => (
@@ -154,6 +159,15 @@ export function ContextView() {
             </select>
           </div>
         )}
+        <Section icon={<Layers size={13} />} label="skill inventory">
+          <Item
+            label="visibility"
+            sub="what this project / profile can see"
+            selected={selected?.kind === "inventory"}
+            onClick={() => setSelected({ kind: "inventory", scope: "", name: "" })}
+          />
+        </Section>
+
         <Section
           icon={<Brain size={13} />}
           label="memory · l1 facts"
@@ -273,7 +287,9 @@ export function ContextView() {
       <div className="flex-1 overflow-y-auto scrollbar-thin">
         {selected ? (
           <Suspense fallback={<ContextPaneFallback />}>
-            {selected.kind === "memory" ? (
+            {selected.kind === "inventory" ? (
+              <SkillInventoryPanel project={projectFilter} />
+            ) : selected.kind === "memory" ? (
               <MemoryDetail
                 key={`mem:${selected.scope}:${selected.name}`}
                 topic={selected.scope}
@@ -345,8 +361,8 @@ function ContextPaneFallback() {
 
 function DialogFallback() {
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-      <div className="bg-bg-panel border border-line rounded-xl px-4 py-3 text-sm text-ink-faint">
+    <div className="fixed inset-0 z-modal bg-black/60 flex items-center justify-center p-4">
+      <div className="bg-bg-panel border border-line rounded-lg px-4 py-3 text-sm text-ink-faint">
         loading…
       </div>
     </div>

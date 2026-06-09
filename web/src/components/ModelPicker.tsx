@@ -103,7 +103,7 @@ export function ModelPicker({ models, value, onChange, onRefresh }: Props) {
       </button>
 
       {open && (
-        <div className="absolute z-20 left-0 bottom-full mb-1 w-[26rem] max-w-[90vw] rounded-lg bg-bg-panel border border-line shadow-xl flex flex-col overflow-hidden">
+        <div className="absolute z-dropdown left-0 bottom-full mb-1 w-[26rem] max-w-[90vw] rounded-lg bg-bg-panel border border-line shadow-overlay flex flex-col overflow-hidden">
           {/* search */}
           <div className="p-2 border-b border-line/60 shrink-0">
             <div className="relative">
@@ -116,7 +116,7 @@ export function ModelPicker({ models, value, onChange, onRefresh }: Props) {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder={`filter ${models.length} models…`}
-                className="w-full bg-bg-inset border border-line rounded pl-7 pr-2 py-1 text-xs font-mono focus:outline-none focus:border-blue-600"
+                className="w-full bg-bg-inset border border-line rounded pl-7 pr-2 py-1 text-xs font-mono focus:outline-none focus:border-accent"
                 onKeyDown={(e) => {
                   if (e.key === "Escape") {
                     e.preventDefault()
@@ -227,7 +227,7 @@ function ModelOption({
     >
       <span
         className={`mt-0.5 text-[10px] shrink-0 ${
-          selected ? "text-blue-300" : "text-ink-faint"
+          selected ? "text-accent" : "text-ink-faint"
         }`}
       >
         {selected ? "●" : "○"}

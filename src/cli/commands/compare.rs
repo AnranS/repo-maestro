@@ -77,6 +77,7 @@ pub async fn compare(a: CompareArgs) -> Result<()> {
             model: None,
             role_prelude: None,
             allowed_tools: Default::default(),
+            harden: Default::default(),
         };
 
         let mut error = None;

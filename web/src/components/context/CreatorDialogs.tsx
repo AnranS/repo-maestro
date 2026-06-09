@@ -46,7 +46,7 @@ export function CreateSkillDialog({
         <select
           value={scope}
           onChange={(e) => setScope(e.target.value)}
-          className="w-full bg-bg-inset border border-line rounded px-2 py-1.5 text-sm focus:outline-none focus:border-blue-600"
+          className="w-full bg-bg-inset border border-line rounded px-2 py-1.5 text-sm focus:outline-none focus:border-accent"
         >
           {allScopes.map((s) => (
             <option key={s} value={s}>
@@ -65,7 +65,7 @@ export function CreateSkillDialog({
           onChange={(e) => setName(e.target.value)}
           placeholder="write-test"
           autoFocus
-          className="w-full bg-bg-inset border border-line rounded px-2 py-1.5 text-sm font-mono focus:outline-none focus:border-blue-600"
+          className="w-full bg-bg-inset border border-line rounded px-2 py-1.5 text-sm font-mono focus:outline-none focus:border-accent"
         />
       </Field>
       <Field label="description">
@@ -73,7 +73,7 @@ export function CreateSkillDialog({
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="One-line summary the agent will see"
-          className="w-full bg-bg-inset border border-line rounded px-2 py-1.5 text-sm focus:outline-none focus:border-blue-600"
+          className="w-full bg-bg-inset border border-line rounded px-2 py-1.5 text-sm focus:outline-none focus:border-accent"
         />
       </Field>
       <Field label="trigger (optional)">
@@ -81,7 +81,7 @@ export function CreateSkillDialog({
           value={trigger}
           onChange={(e) => setTrigger(e.target.value)}
           placeholder="phrase | another phrase | …"
-          className="w-full bg-bg-inset border border-line rounded px-2 py-1.5 text-sm focus:outline-none focus:border-blue-600"
+          className="w-full bg-bg-inset border border-line rounded px-2 py-1.5 text-sm focus:outline-none focus:border-accent"
         />
         <p className="mt-1 text-[10px] text-ink-faint">
           When any phrase appears in a chat message, this skill's full body is
@@ -162,7 +162,7 @@ export function CreateMemoryDialog({
           <select
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
-            className="mt-2 w-full bg-bg-inset border border-line rounded px-2 py-1.5 text-sm focus:outline-none focus:border-blue-600"
+            className="mt-2 w-full bg-bg-inset border border-line rounded px-2 py-1.5 text-sm focus:outline-none focus:border-accent"
           >
             {existingTopics.map((t) => (
               <option key={t} value={t}>
@@ -176,7 +176,7 @@ export function CreateMemoryDialog({
             onChange={(e) => setNewTopic(e.target.value)}
             placeholder="api, schema, ux, ..."
             autoFocus
-            className="mt-2 w-full bg-bg-inset border border-line rounded px-2 py-1.5 text-sm font-mono focus:outline-none focus:border-blue-600"
+            className="mt-2 w-full bg-bg-inset border border-line rounded px-2 py-1.5 text-sm font-mono focus:outline-none focus:border-accent"
           />
         )}
       </Field>
@@ -185,7 +185,7 @@ export function CreateMemoryDialog({
           value={filename}
           onChange={(e) => setFilename(e.target.value)}
           placeholder="rate-limit.md, schema.sql, conventions.yaml, …"
-          className="w-full bg-bg-inset border border-line rounded px-2 py-1.5 text-sm font-mono focus:outline-none focus:border-blue-600"
+          className="w-full bg-bg-inset border border-line rounded px-2 py-1.5 text-sm font-mono focus:outline-none focus:border-accent"
         />
         <p className="mt-1 text-[10px] text-ink-faint">
           Use `.md` / `.yaml` / `.sql` etc. The extension picks the syntax
@@ -226,11 +226,11 @@ function Modal({
 }) {
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+      className="fixed inset-0 z-modal bg-black/60 flex items-center justify-center p-4"
       onClick={onClose}
     >
       <div
-        className="bg-bg-panel border border-line rounded-xl w-full max-w-md p-5 shadow-2xl"
+        className="bg-bg-panel border border-line rounded-lg w-full max-w-md p-5 shadow-overlay"
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="text-base font-semibold mb-3">{title}</h2>

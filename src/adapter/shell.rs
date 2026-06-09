@@ -377,6 +377,7 @@ mod tests {
                 shell: true,
                 ..Default::default()
             },
+            harden: Default::default(),
         };
 
         let err = ShellAdapter::new().run(task).await.unwrap_err();
@@ -414,6 +415,7 @@ mod tests {
             model: None,
             role_prelude: None,
             allowed_tools: allow("echo*"),
+            harden: Default::default(),
         };
         ShellAdapter::new().run(task).await.unwrap();
         let log = std::fs::read_to_string(temp.path().join("shell.log")).unwrap();

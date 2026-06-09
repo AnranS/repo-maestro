@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::util::slugify;
 use crate::cli::PlanCmd;
-use crate::config::{AnalyzeReport, Plan, Project, ProjectsConfig};
+use crate::config::{Plan, Project, ProjectsConfig};
 use crate::paths;
-use crate::schema::preview::{codes, BlastEntry, Edge, Issue, PlanPreview};
+use crate::schema::preview::{codes, Issue, PlanPreview};
 
 pub fn run(c: PlanCmd) -> Result<()> {
     match c {
@@ -70,14 +70,14 @@ fn validate_json(plan_path: &Path) -> Result<()> {
         }
     };
     if let Some(issue) = p.first_validation_issue() {
-        let mut preview = plan_preview_core(&p);
+        let mut preview = crate::config::analyze::plan_preview_core(&p);
         preview.errors.push(issue);
         println!("{}", preview.to_json());
         std::process::exit(2);
     }
     // Structurally valid: enrich with analyze findings (unknown_project, …).
     let report = crate::config::analyze(&p, &load_projects_or_empty());
-    let preview = plan_preview(&p, &report);
+    let preview = crate::config::analyze::plan_preview(&p, &report);
     println!("{}", preview.to_json());
     if !preview.is_valid() {
         std::process::exit(2);
@@ -97,66 +97,9 @@ fn load_projects_or_empty() -> ProjectsConfig {
         })
 }
 
-/// Full F-111 `PlanPreview` for a structurally-valid plan + its analyze report
-/// (core + warnings/errors). Shared by `plan validate --json` and
-/// `work --dry --json` and tests.
-pub(crate) fn plan_preview(p: &Plan, report: &AnalyzeReport) -> PlanPreview {
-    let mut preview = plan_preview_core(p);
-    for f in &report.findings {
-        if f.is_error() {
-            preview.errors.push(f.to_issue());
-        } else {
-            preview.warnings.push(f.to_issue());
-        }
-    }
-    preview
-}
-
-/// The structural part of a `PlanPreview` — counts, `depends_on` edges, and the
-/// downstream blast radius. No findings. Single-pass, so safe even on a
-/// structurally-invalid plan.
-fn plan_preview_core(p: &Plan) -> PlanPreview {
-    use std::collections::{BTreeMap, BTreeSet};
-    let projects: BTreeSet<&str> = p.tasks.iter().map(|t| t.project.as_str()).collect();
-    let edges: Vec<Edge> = p
-        .tasks
-        .iter()
-        .flat_map(|t| {
-            t.depends_on.iter().map(move |dep| Edge {
-                from: dep.clone(),
-                to: t.id.clone(),
-                kind: "depends_on".to_string(),
-            })
-        })
-        .collect();
-    let mut downstream: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-    for t in &p.tasks {
-        for dep in &t.depends_on {
-            downstream
-                .entry(dep.as_str())
-                .or_default()
-                .push(t.id.clone());
-        }
-    }
-    let blast_radius: Vec<BlastEntry> = p
-        .tasks
-        .iter()
-        .filter_map(|t| {
-            downstream.get(t.id.as_str()).map(|ds| BlastEntry {
-                task: t.id.clone(),
-                project: t.project.clone(),
-                downstream: ds.clone(),
-            })
-        })
-        .collect();
-    PlanPreview {
-        project_count: projects.len() as u32,
-        task_count: p.tasks.len() as u32,
-        dependency_edges: edges,
-        blast_radius,
-        ..Default::default()
-    }
-}
+// `plan_preview` / `plan_preview_core` now live in `crate::config::analyze` so
+// non-CLI callers (server, F-118 runtime health) reuse them without depending on
+// a CLI command module. Call them via `crate::config::analyze::plan_preview`.
 
 fn hash(plan_path: std::path::PathBuf) -> Result<()> {
     let hash = crate::file_guard::file_hash(&plan_path)?;
@@ -1325,7 +1268,7 @@ projects:
         )
         .unwrap();
         let report = crate::config::analyze(&p, &cfg);
-        let preview = plan_preview(&p, &report);
+        let preview = crate::config::analyze::plan_preview(&p, &report);
 
         assert_eq!(preview.task_count, 3);
         assert_eq!(preview.project_count, 3);

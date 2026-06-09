@@ -12,6 +12,17 @@ pub struct OutboundReply {
     pub title: String,
     pub body: String,
     pub attachments: Vec<ArtifactRef>,
+    /// F-134: the owning delivery, when this reply is a `delivery.*` write-back (so the
+    /// external drainer can route a receipt back to the delivery without a reverse
+    /// lookup). `None` for ordinary run-event replies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_id: Option<String>,
+    /// F-134: a stable content hash identifying THIS write-back intent — the drainer
+    /// echoes it back on the receipt so a stale receipt can't be applied. Set at emit;
+    /// the SAME key is persisted on `closeout.writeback.idempotency_key`. `None` for
+    /// ordinary run-event replies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +60,8 @@ pub fn format_event(
         title,
         body,
         attachments,
+        delivery_id: None,
+        idempotency_key: None,
     })
 }
 
@@ -113,6 +126,8 @@ mod tests {
             title: "run.started · run-1".to_string(),
             body: "run_id: run-1".to_string(),
             attachments: Vec::new(),
+            delivery_id: None,
+            idempotency_key: None,
         };
 
         let encoded = serde_json::to_string(&reply).unwrap();

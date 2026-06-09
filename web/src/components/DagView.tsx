@@ -84,9 +84,9 @@ function nodeStyle(status: string) {
     // Running nodes get a brighter fill + border so the active frontier reads
     // as "lit up" against the dimmed pending nodes (the pulse glow is layered
     // on via the .task-pulse keyframe).
-    background: `linear-gradient(0deg, ${withAlpha(color, running ? 0.16 : 0.08)}, ${withAlpha(color, running ? 0.16 : 0.08)}), #161616`,
+    background: `linear-gradient(0deg, ${withAlpha(color, running ? 0.15 : 0.07)}, ${withAlpha(color, running ? 0.15 : 0.07)}), ${GRAPH_CANVAS.nodeBg}`,
     borderColor: withAlpha(color, running ? 0.85 : 0.45),
-    boxShadow: active && !running ? `0 0 18px ${withAlpha(color, 0.22)}` : undefined,
+    boxShadow: active && !running ? `0 12px 28px -24px ${withAlpha(color, 0.7)}, 0 0 18px ${withAlpha(color, 0.18)}` : undefined,
   }
 }
 
@@ -113,7 +113,7 @@ const TaskNode = memo(function TaskNode({ data }: NodeProps<Node<TaskNodeData>>)
   return (
     <div
       style={nodeStyle(t.status)}
-      className={`group h-[64px] w-[210px] rounded-xl border px-3 py-2.5 transition-all hover:border-line-soft ${nodeChrome(
+      className={`graph-node group h-[64px] w-[210px] rounded-lg border px-3 py-2.5 transition-all hover:border-line-soft ${nodeChrome(
         t.status,
       )} ${pulse} ${dim ? "opacity-50" : ""}`}
     >
@@ -132,7 +132,7 @@ const TaskNode = memo(function TaskNode({ data }: NodeProps<Node<TaskNodeData>>)
           {t.id}
         </span>
         {running && (
-          <span className="ml-auto shrink-0 text-[9px] font-semibold uppercase tracking-wider text-blue-300">
+          <span className="ml-auto shrink-0 text-[9px] font-semibold uppercase tracking-wider text-status-info">
             running
           </span>
         )}
@@ -145,14 +145,14 @@ const TaskNode = memo(function TaskNode({ data }: NodeProps<Node<TaskNodeData>>)
         <span className="ml-auto flex items-center gap-1.5">
           {!!t.attempts && t.attempts > 0 && (
             <span
-              className="rounded bg-amber-500/15 px-1 font-mono text-[9px] text-amber-300"
+              className="rounded bg-amber-500/15 px-1 font-mono text-[9px] text-status-warning"
               title={`retried ${t.attempts}×`}
             >
               ↻{t.attempts}
             </span>
           )}
           {elapsed && (
-            <span className={`font-mono tabular-nums ${running ? "text-blue-300" : "text-ink-faint"}`}>
+            <span className={`font-mono tabular-nums ${running ? "text-status-info" : "text-ink-faint"}`}>
               {elapsed}
             </span>
           )}
@@ -162,7 +162,7 @@ const TaskNode = memo(function TaskNode({ data }: NodeProps<Node<TaskNodeData>>)
             </span>
           )}
           {t.requires_approval_after && (
-            <span title="requires approval after" className="text-amber-300/90">
+            <span title="requires approval after" className="text-status-warning/90">
               <Pause size={10} />
             </span>
           )}
@@ -265,7 +265,7 @@ export function DagView({ tasks }: { tasks: TaskState[] }) {
     <ReactFlowProvider>
       <div
         style={{ height }}
-        className="w-full rounded-xl bg-bg-inset border border-line/60 dag-flow"
+        className="graph-canvas w-full rounded-lg border border-line/60 dag-flow"
       >
         <ReactFlow
           nodes={nodes}

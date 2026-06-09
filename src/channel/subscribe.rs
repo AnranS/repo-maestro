@@ -39,11 +39,16 @@ pub fn handle_event(
     else {
         return Ok(None);
     };
-    append_reply(run_dir, &reply)?;
+    append_outbound_reply(run_dir, &reply)?;
     Ok(Some(reply))
 }
 
-fn append_reply(run_dir: &Path, reply: &OutboundReply) -> Result<(), SubscribeError> {
+/// Append one `OutboundReply` to the run's `outbound_replies.ndjson` queue — the
+/// single source of truth for the channel file format. Reused by F-127c
+/// `delivery closeout --writeback` so the delivery layer never duplicates this
+/// append logic. A failed append is an explicit error (the caller decides what to
+/// do — a closeout write-back fails the command on append error).
+pub fn append_outbound_reply(run_dir: &Path, reply: &OutboundReply) -> Result<(), SubscribeError> {
     let path = outbound_replies_path(run_dir);
     let line = serde_json::to_string(reply).map_err(SubscribeError::Serialize)?;
     let mut file = std::fs::OpenOptions::new()

@@ -592,30 +592,14 @@ fn validate_artifact_refs(refs: &BTreeMap<String, ArtifactRef>) -> Result<()> {
     Ok(())
 }
 
-/// A run-relative path: reject Unix-absolute, a leading slash/backslash (covers
-/// UNC `\\server` / `//server`), a Windows drive-letter root (`C:\`, `C:/`), and
-/// any `..` traversal component.
+// Run-local ref rules live in `schema::artifacts` (the canonical home) so the
+// event ledger and the F-124 evidence ledger validate identically.
 fn ref_path_is_unsafe(path: &str) -> bool {
-    if Path::new(path).is_absolute() {
-        return true;
-    }
-    if path.starts_with('/') || path.starts_with('\\') {
-        return true;
-    }
-    if path.split(['/', '\\']).any(|component| component == "..") {
-        return true;
-    }
-    let bytes = path.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && (bytes[2] == b'/' || bytes[2] == b'\\')
+    crate::schema::artifacts::ref_path_is_unsafe(path)
 }
 
-/// Reject `file:` URIs (any case) — a run-local artifact uses `path`, never a
-/// filesystem URI; only remote/opaque schemes belong in `uri`.
 fn ref_uri_is_unsafe(uri: &str) -> bool {
-    uri.trim_start().to_ascii_lowercase().starts_with("file:")
+    crate::schema::artifacts::ref_uri_is_unsafe(uri)
 }
 
 /// Pure read-side projection of a run's event ledger (F-115). No filesystem, no
@@ -1099,6 +1083,10 @@ mod tests {
         assert!(validate_artifact_refs(&ref_with_path("C:/data/a.log")).is_err());
         assert!(validate_artifact_refs(&ref_with_path(r"\\server\share\a.log")).is_err());
         assert!(validate_artifact_refs(&ref_with_path("//server/share/a.log")).is_err());
+        // Windows drive-RELATIVE (resolves against the drive's CWD, not run-local)
+        assert!(validate_artifact_refs(&ref_with_path("C:foo")).is_err());
+        assert!(validate_artifact_refs(&ref_with_path("C:")).is_err());
+        assert!(validate_artifact_refs(&ref_with_path("D:data/log")).is_err());
         // file: URIs rejected (any case); remote / opaque URIs allowed
         assert!(validate_artifact_refs(&ref_with_uri("file:///opt/a.log")).is_err());
         assert!(validate_artifact_refs(&ref_with_uri("file://logs/a.log")).is_err());

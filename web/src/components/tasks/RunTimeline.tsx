@@ -98,7 +98,7 @@ export function RunTimeline({ tasks, embedded }: { tasks: TaskState[]; embedded?
   if (embedded) return body
 
   return (
-    <section data-pane="timeline" className="bg-bg-panel border border-line rounded-xl">
+    <section data-pane="timeline" className="bg-bg-panel border border-line rounded-lg">
       <div className="px-4 py-2.5 border-b border-line flex items-center justify-between">
         <span className="text-xs uppercase tracking-wider text-ink-faint">{t("tasks.timeline")}</span>
         <span className="text-xs text-ink-faint font-mono tabular-nums">{fmtSpan(span)}</span>

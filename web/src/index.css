@@ -4,18 +4,121 @@
 
 @layer base {
   html {
+    --color-bg: 10 10 10;
+    --color-bg-soft: 17 17 17;
+    --color-bg-panel: 22 22 22;
+    --color-bg-inset: 13 13 13;
+    --color-bg-hover: 28 28 28;
+    --color-line: 31 31 31;
+    --color-line-soft: 38 38 38;
+    --color-accent: 96 165 250;
+    --color-accent-soft: 147 197 253;
+    --color-accent-muted: 29 78 216;
+    --color-ink: 237 237 237;
+    --color-ink-dim: 163 163 163;
+    --color-ink-mute: 115 115 115;
+    --color-ink-faint: 82 82 82;
+    /* F-135: theme-aware status foreground tokens. Dark = the Tailwind -300
+       shade — i.e. the exact pre-F-135 status text color, so dark does NOT
+       regress. Light = the -700 shade (legible on the near-white translucent
+       chip bg; -300 was ~70% pale and unreadable in light). */
+    --color-status-success: 110 231 183;
+    --color-status-warning: 252 211 77;
+    --color-status-danger: 252 165 165;
+    --color-status-info: 147 197 253;
+    --shadow-overlay: 0 0 0;
+    --graph-canvas: 10 10 10;
+    --graph-canvas-panel: 14 14 14;
+    --graph-grid: 34 34 34;
+    --graph-node-bg: 22 22 22;
+    --graph-node-topline: 255 255 255;
+    --graph-node-muted: 82 82 82;
+    --graph-edge-label-bg: 17 17 17;
+    --graph-edge-label-fg: 203 213 225;
+    --graph-controls-bg: 22 22 22;
+    --graph-controls-hover: 31 31 31;
+    color-scheme: dark;
+  }
+  html[data-theme="light"] {
+    --color-bg: 248 250 252;
+    --color-bg-soft: 243 246 250;
+    --color-bg-panel: 255 255 255;
+    --color-bg-inset: 241 245 249;
+    --color-bg-hover: 226 232 240;
+    --color-line: 214 220 228;
+    --color-line-soft: 190 199 211;
+    --color-accent: 37 99 235;
+    --color-accent-soft: 59 130 246;
+    --color-accent-muted: 191 219 254;
+    --color-ink: 15 23 42;
+    --color-ink-dim: 51 65 85;
+    --color-ink-mute: 100 116 139;
+    --color-ink-faint: 148 163 184;
+    /* F-135 light: the -700 shade — high enough contrast on the near-white chip. */
+    --color-status-success: 4 120 87;
+    --color-status-warning: 180 83 9;
+    --color-status-danger: 185 28 28;
+    --color-status-info: 29 78 216;
+    --shadow-overlay: 15 23 42;
+    --graph-canvas: 248 250 252;
+    --graph-canvas-panel: 255 255 255;
+    --graph-grid: 205 213 224;
+    --graph-node-bg: 255 255 255;
+    --graph-node-topline: 15 23 42;
+    --graph-node-muted: 148 163 184;
+    --graph-edge-label-bg: 255 255 255;
+    --graph-edge-label-fg: 51 65 85;
+    --graph-controls-bg: 255 255 255;
+    --graph-controls-hover: 241 245 249;
+    color-scheme: light;
+  }
+  html[data-theme="dark"] {
     color-scheme: dark;
   }
   body {
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+    background: rgb(var(--color-bg));
   }
   ::selection {
-    background: rgb(59 130 246 / 0.35);
+    background: rgb(var(--color-accent) / 0.28);
+  }
+  /* F-UI-003 Slice 5: one visible keyboard focus ring on every interactive
+     element - focus-visible only (never on mouse), so no per-button churn. */
+  a:focus-visible,
+  button:focus-visible,
+  select:focus-visible,
+  summary:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  [role="button"]:focus-visible,
+  [role="tab"]:focus-visible,
+  [tabindex]:focus-visible {
+    @apply outline-none ring-1 ring-accent;
+  }
+  /* Respect prefers-reduced-motion: collapse animations/transitions to instant. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
 
 @layer components {
+  /* F-UI-003 Slice 0: one shared keyboard focus ring. Defined here; applied to
+     interactive elements during the Slice 5 a11y sweep. Visible only for
+     keyboard navigation (focus-visible), never on mouse focus. */
+  .focus-ring {
+    @apply outline-none;
+  }
+  .focus-ring:focus-visible {
+    @apply ring-1 ring-accent ring-offset-1 ring-offset-bg;
+  }
   .scrollbar-thin {
     scrollbar-width: thin;
   }
@@ -24,11 +127,11 @@
     height: 8px;
   }
   .scrollbar-thin::-webkit-scrollbar-thumb {
-    background: rgb(38 38 38);
+    background: rgb(var(--color-line-soft));
     border-radius: 4px;
   }
   .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-    background: rgb(64 64 64);
+    background: rgb(var(--color-ink-faint));
   }
   .scrollbar-thin::-webkit-scrollbar-track {
     background: transparent;
@@ -39,7 +142,7 @@
 .prose-chat {
   font-size: 0.925rem;
   line-height: 1.65;
-  color: rgb(229 229 229);
+  color: rgb(var(--color-ink-dim));
 }
 .prose-chat > * + * {
   margin-top: 0.85em;
@@ -51,7 +154,7 @@
   letter-spacing: -0.01em;
   margin-top: 1.3em;
   margin-bottom: 0.5em;
-  color: rgb(245 245 245);
+  color: rgb(var(--color-ink));
 }
 .prose-chat h1 { font-size: 1.25rem; }
 .prose-chat h2 { font-size: 1.1rem; }
@@ -66,40 +169,40 @@
 .prose-chat ol { list-style: decimal; }
 .prose-chat li { margin: 0.2em 0; }
 .prose-chat li > p { margin: 0.2em 0; }
-.prose-chat strong { color: rgb(250 250 250); font-weight: 600; }
-.prose-chat em { color: rgb(229 229 229); }
+.prose-chat strong { color: rgb(var(--color-ink)); font-weight: 600; }
+.prose-chat em { color: rgb(var(--color-ink-dim)); }
 .prose-chat a {
-  color: rgb(96 165 250);
+  color: rgb(var(--color-accent));
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 .prose-chat hr {
-  border-color: rgb(38 38 38);
+  border-color: rgb(var(--color-line-soft));
   margin: 1.5em 0;
 }
 .prose-chat blockquote {
-  border-left: 3px solid rgb(63 63 70);
+  border-left: 3px solid rgb(var(--color-line-soft));
   padding-left: 0.85em;
-  color: rgb(163 163 163);
+  color: rgb(var(--color-ink-mute));
   margin: 0.6em 0;
 }
 .prose-chat code:not(pre code) {
-  background: rgb(38 38 38);
-  color: rgb(245 245 245);
+  background: rgb(var(--color-bg-inset));
+  color: rgb(var(--color-ink));
   padding: 1px 5px;
   border-radius: 4px;
   font-size: 0.85em;
 }
 .prose-chat pre {
-  background: rgb(10 10 10);
-  border: 1px solid rgb(38 38 38);
+  background: rgb(var(--color-bg-inset));
+  border: 1px solid rgb(var(--color-line));
   border-radius: 8px;
   padding: 0.85em 1em;
   overflow-x: auto;
   font-size: 0.82rem;
   line-height: 1.6;
 }
-.prose-chat pre code { background: transparent; padding: 0; color: rgb(229 229 229); }
+.prose-chat pre code { background: transparent; padding: 0; color: rgb(var(--color-ink-dim)); }
 .prose-chat table {
   border-collapse: collapse;
   font-size: 0.85em;
@@ -107,12 +210,12 @@
 }
 .prose-chat th,
 .prose-chat td {
-  border: 1px solid rgb(38 38 38);
+  border: 1px solid rgb(var(--color-line));
   padding: 0.4em 0.7em;
   text-align: left;
 }
 .prose-chat th {
-  background: rgb(20 20 20);
+  background: rgb(var(--color-bg-inset));
   font-weight: 600;
 }
 
@@ -167,6 +270,26 @@
  * is moving). For the static architecture graph we slow the dash crawl so it
  * conveys direction without distracting; for running tasks we speed it up
  * slightly so the "this is the active path" reading is unmistakable. */
+.graph-canvas {
+  background:
+    linear-gradient(180deg, rgb(var(--graph-canvas-panel) / 0.72), rgb(var(--graph-canvas) / 1)),
+    rgb(var(--graph-canvas));
+}
+.graph-node {
+  background:
+    linear-gradient(180deg, rgb(var(--graph-node-topline) / 0.055), transparent 42%),
+    rgb(var(--graph-node-bg));
+}
+.graph-node:hover {
+  box-shadow:
+    0 16px 36px -30px rgb(var(--shadow-overlay) / 0.58),
+    inset 0 1px 0 rgb(var(--graph-node-topline) / 0.08);
+}
+.graph-node-muted {
+  background:
+    linear-gradient(180deg, rgb(var(--graph-node-topline) / 0.025), transparent 45%),
+    rgb(var(--color-bg-inset) / 0.78);
+}
 .arch-flow .react-flow__edge.animated .react-flow__edge-path {
   stroke-dasharray: 6 6;
   animation: maestroDashFlow 1.6s linear infinite;
@@ -177,22 +300,22 @@
 }
 .dag-flow .react-flow__controls,
 .arch-flow .react-flow__controls {
-  background: #161616 !important;
-  border: 1px solid #262626 !important;
+  background: rgb(var(--graph-controls-bg)) !important;
+  border: 1px solid rgb(var(--color-line)) !important;
   border-radius: 6px !important;
   overflow: hidden;
-  box-shadow: none;
+  box-shadow: 0 12px 26px -22px rgb(var(--shadow-overlay) / 0.45);
 }
 .dag-flow .react-flow__controls-button,
 .arch-flow .react-flow__controls-button {
-  background: #161616 !important;
-  border-bottom: 1px solid #262626 !important;
-  color: #a3a3a3 !important;
+  background: rgb(var(--graph-controls-bg)) !important;
+  border-bottom: 1px solid rgb(var(--color-line)) !important;
+  color: rgb(var(--color-ink-mute)) !important;
 }
 .dag-flow .react-flow__controls-button:hover,
 .arch-flow .react-flow__controls-button:hover {
-  background: #1c1c1c !important;
-  color: #ededed !important;
+  background: rgb(var(--graph-controls-hover)) !important;
+  color: rgb(var(--color-ink)) !important;
 }
 .dag-flow .react-flow__controls-button svg,
 .arch-flow .react-flow__controls-button svg {
@@ -208,22 +331,18 @@
 .task-pulse {
   animation: maestroTaskPulse 1.8s ease-in-out infinite;
 }
-/* Running timeline bars get a left-to-right shine so they read as "in motion"
- * even though their width only changes once a second. */
+/* Running timeline bars read as active via a steady, subtle highlight. The
+ * left-to-right shine animation was decorative (F-UI-003 Slice 5: motion 2/10,
+ * cause-effect only) - the bar's growing width already conveys progress. */
 .timeline-bar-running {
   background-image: linear-gradient(
     90deg,
     rgba(255, 255, 255, 0) 0%,
-    rgba(255, 255, 255, 0.28) 50%,
+    rgba(255, 255, 255, 0.12) 50%,
     rgba(255, 255, 255, 0) 100%
   );
-  background-size: 200% 100%;
-  animation: timelineShine 1.4s linear infinite;
-}
-@keyframes timelineShine {
-  to { background-position: -200% 0; }
 }
 @keyframes maestroTaskPulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.45), 0 0 18px rgba(59, 130, 246, 0.30); }
-  50%      { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0.0), 0 0 40px rgba(59, 130, 246, 0.55); }
+  0%, 100% { box-shadow: 0 0 0 0 rgb(var(--color-accent) / 0.38), 0 0 18px rgb(var(--color-accent) / 0.24); }
+  50%      { box-shadow: 0 0 0 6px rgb(var(--color-accent) / 0), 0 0 40px rgb(var(--color-accent) / 0.42); }
 }

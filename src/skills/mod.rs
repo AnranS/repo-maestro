@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 
 use crate::paths;
 
+pub mod inventory;
+
 pub const SKILLS_DIR: &str = "skills";
 pub const GLOBAL_SCOPE_DIR: &str = "_global";
 
@@ -101,7 +103,7 @@ pub fn skill_path(scope: &SkillScope, name: &str) -> Result<PathBuf> {
     Ok(scope_dir(scope)?.join(format!("{}.md", sanitize(name))))
 }
 
-fn sanitize(name: &str) -> String {
+pub(crate) fn sanitize(name: &str) -> String {
     let trimmed = name.trim().trim_end_matches(".md");
     trimmed
         .chars()
@@ -189,6 +191,17 @@ pub fn list_all() -> Result<BTreeMap<String, Vec<Skill>>> {
         by_scope.insert(dir, skills);
     }
     Ok(by_scope)
+}
+
+/// Every skill, grouped by scope, as body-free [`SkillSummary`]s. The sidebar
+/// listing never needs skill bodies — only the per-skill editor route does — so
+/// this keeps playbook content off the wire (F-121 N1).
+pub fn list_all_summaries() -> Result<BTreeMap<String, Vec<SkillSummary>>> {
+    let mut out = BTreeMap::new();
+    for (scope, skills) in list_all()? {
+        out.insert(scope, skills.into_iter().map(summarize).collect());
+    }
+    Ok(out)
 }
 
 pub fn load(scope: &SkillScope, name: &str) -> Result<Skill> {

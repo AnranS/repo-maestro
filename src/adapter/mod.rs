@@ -41,6 +41,12 @@ pub struct AgentTask {
     pub role_prelude: Option<String>,
 
     pub allowed_tools: crate::modes::AllowedTools,
+
+    /// F-136b1: resolved per-run runtime hardening (env scrub + output cap).
+    /// `Default` is fully off (no behavior change); the executor fills it from
+    /// `defaults.runtime_hardening`. Only the untrusted agent adapters
+    /// (codex / cursor) consult it.
+    pub harden: crate::runtime_harden::Hardening,
 }
 
 #[derive(Debug, Clone)]
@@ -364,6 +370,25 @@ mod prompt_tests {
         // confusing the agent.
         let p = render_prompt_full("do", &[], Some("   \n  "));
         assert_eq!(p, "do");
+    }
+
+    #[test]
+    fn full_prompt_render_is_byte_stable_with_memory_and_prelude() {
+        // F-116: locks the exact rendered prompt (memory slices incl. a workflow
+        // input + prelude + task body). The recorder is a side-channel that must
+        // not change a single byte of this output.
+        let context = vec![
+            slice("billing-service/decisions", "fact one"),
+            slice("wf/alias", "input two"),
+        ];
+        let prelude = "## Project instructions\n\nfollow X\n\n# Role · backend\n\nbe careful";
+        let out = render_prompt_full("do the task", &context, Some(prelude));
+        let expected = "# Project context (from .maestro/memory/l1_facts)\n\n\
+## billing-service/decisions\n\n```\nfact one\n```\n\n\
+## wf/alias\n\n```\ninput two\n```\n\n\
+## Project instructions\n\nfollow X\n\n# Role · backend\n\nbe careful\n\n\
+# Task\n\ndo the task";
+        assert_eq!(out, expected);
     }
 
     #[test]

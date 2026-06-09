@@ -3,14 +3,13 @@ import { ShieldAlert } from "lucide-react"
 import type { Finding } from "../../types"
 import { api } from "../../api"
 import { t } from "../../i18n"
+import { severityToken } from "../ui/StatusChip"
+import { CollapsibleSection } from "../ui/CollapsibleSection"
 
-const SEVERITY_COLOR: Record<string, string> = {
-  critical: "#f87171",
-  high: "#fb923c",
-  medium: "#fbbf24",
-  low: "#60a5fa",
-  info: "#94a3b8",
-}
+// Auto-expand (F-UI-003 §6 matrix) when findings need handling: a high/critical
+// severity, or a refute/doctor finding. Low/info-only findings stay collapsed.
+const needsAction = (f: Finding) =>
+  f.severity === "high" || f.severity === "critical" || f.kind === "refute" || f.kind === "doctor"
 
 /**
  * Run-detail finding-ledger surface (F-110): a count header + compact list of the
@@ -50,23 +49,20 @@ export function FindingsPanel({
   }, [runId, refreshKey])
 
   if (findings.length === 0) return null
+  const actionable = findings.some(needsAction)
 
   return (
-    <section data-pane="findings" className="bg-bg-panel border border-line rounded-xl">
-      <div className="px-4 py-2.5 border-b border-line flex items-center justify-between">
-        <span className="text-xs uppercase tracking-wider text-ink-faint flex items-center gap-1.5">
-          <ShieldAlert size={12} /> {t("tasks.findings")}
-        </span>
-        <span className="text-xs text-ink-faint">
-          {t("tasks.findingsCount", { n: findings.length })}
-        </span>
-      </div>
-      <div className="divide-y divide-line/40">
+    <CollapsibleSection
+      title={t("tasks.findings")}
+      icon={<ShieldAlert size={12} className="shrink-0 text-ink-faint" />}
+      summary={t("tasks.findingsCount", { n: findings.length })}
+      defaultOpen={actionable}
+    >
+      <div data-pane="findings" className="divide-y divide-line/40">
         {findings.slice(0, 20).map((f) => (
           <div key={f.finding_id} className="px-4 py-2 flex items-start gap-2.5">
             <span
-              className="mt-1 h-2 w-2 shrink-0 rounded-full"
-              style={{ backgroundColor: SEVERITY_COLOR[f.severity] ?? "#94a3b8" }}
+              className={`mt-1 h-2 w-2 shrink-0 rounded-full ${severityToken(f.severity).dot}`}
               title={f.severity}
             />
             <div className="min-w-0 flex-1">
@@ -89,6 +85,6 @@ export function FindingsPanel({
           </div>
         ))}
       </div>
-    </section>
+    </CollapsibleSection>
   )
 }

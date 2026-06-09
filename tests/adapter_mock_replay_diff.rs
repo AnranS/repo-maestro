@@ -76,6 +76,7 @@ fn task(repo: &Path, log_path: &Path) -> AgentTask {
         model: None,
         role_prelude: None,
         allowed_tools: AllowedTools::default(),
+        harden: Default::default(),
     }
 }
 

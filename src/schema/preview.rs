@@ -184,6 +184,62 @@ impl PlanPreview {
     }
 }
 
+/// F-122 — the pinned plan-preview snapshot written into a real run's dir when
+/// it starts. UI and audit read THIS (the runtime source of truth) instead of
+/// recomputing a preview that could drift from the plan that actually executed.
+/// The inner `preview` is reused verbatim from `config::analyze::plan_preview`
+/// (same shape as `plan validate --json`), never recomputed with a forked algo.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanPreviewSnapshot {
+    #[serde(default = "crate::schema::plan_preview_snapshot_version")]
+    pub schema_version: String,
+    /// What pinned this snapshot. `"run"` = a real run start (the only writer in
+    /// v1). Dry-run / validate previews are deliberately NOT pinned — they are
+    /// throwaway previews, not runtime truth.
+    pub source: String,
+    /// Run-relative path of the pinned plan (always `PLAN.yaml` in v1).
+    pub plan_path: String,
+    /// Stable hash of the pinned `PLAN.yaml` (`file_guard::file_hash`,
+    /// `fnv1a64:…`) — the same format the resume descriptor uses. A reader can
+    /// recompute it against the run dir's `PLAN.yaml` to detect drift.
+    pub plan_hash: String,
+    /// The compiled F-111 preview for the executed plan.
+    pub preview: PlanPreview,
+    /// Plan-gate decision ref, when a gate recorded one. `None` (omitted) means
+    /// "no gate decision pinned" — never a fabricated approval. The structured
+    /// gate contract lands in F-123.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<String>,
+}
+
+impl PlanPreviewSnapshot {
+    /// Build a snapshot for a real run. `plan_path` is fixed to `PLAN.yaml` (v1).
+    pub fn new(
+        source: impl Into<String>,
+        plan_hash: impl Into<String>,
+        preview: PlanPreview,
+    ) -> Self {
+        Self {
+            schema_version: crate::schema::plan_preview_snapshot_version(),
+            source: source.into(),
+            plan_path: crate::paths::PLAN_SNAPSHOT.to_string(),
+            plan_hash: plan_hash.into(),
+            preview,
+            gate: None,
+        }
+    }
+
+    /// Pretty JSON for the on-disk `PLAN_PREVIEW.json`.
+    pub fn to_json_pretty(&self) -> serde_json::Result<String> {
+        serde_json::to_string_pretty(self)
+    }
+
+    /// Parse a snapshot back from its on-disk JSON (used by readers/tests).
+    pub fn from_json(s: &str) -> serde_json::Result<Self> {
+        serde_json::from_str(s)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

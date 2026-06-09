@@ -157,8 +157,11 @@ fn to_hit(chunk: crate::memory::retrieval::Chunk, score: f32) -> MemoryHit {
 
 // ─── skills ───────────────────────────────────────────────────────────
 
+/// The sidebar listing is metadata only — skill bodies stay off the wire and
+/// are served exclusively by the `/api/skills/:scope/:name` editor route
+/// (F-121 N1: viewing the inventory must not download playbook content).
 pub async fn skills_list() -> Response {
-    match crate::skills::list_all() {
+    match crate::skills::list_all_summaries() {
         Ok(map) => Json(map).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
     }
@@ -214,6 +217,91 @@ pub async fn skill_delete(Path((scope, name)): Path<(String, String)>) -> Respon
         Ok(()) => (StatusCode::NO_CONTENT, "").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
     }
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct InventoryQuery {
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
+    profile: Option<String>,
+}
+
+/// F-121 — read-only skill/profile visibility inventory (`maestro.skill_inventory.v1`).
+/// Metadata only: it never loads or returns skill bodies, and the projection is
+/// validated before emit so a malformed result is a neutral 500, never half-JSON.
+/// Registered BEFORE `/api/skills/:scope/:name` so the single-segment
+/// `inventory` path is never read as a `:scope`. A path-unsafe query value is a
+/// 400; an unknown (but well-formed) project/profile is a 404; a missing skills
+/// root is a 200 empty inventory.
+pub async fn skills_inventory(Query(q): Query<InventoryQuery>) -> Response {
+    // Neutral guard: a path-unsafe query value is a 400, but — unlike the editor
+    // route's `reject_traversal` — the body never echoes the raw value (this is a
+    // privacy/metadata surface; Step 1 also never re-emits a rejected value).
+    if let Some(p) = &q.project {
+        if crate::paths::validate_path_component("project", p).is_err() {
+            return (StatusCode::BAD_REQUEST, "invalid project").into_response();
+        }
+    }
+    if let Some(p) = &q.profile {
+        if crate::paths::validate_path_component("profile", p).is_err() {
+            return (StatusCode::BAD_REQUEST, "invalid profile").into_response();
+        }
+    }
+
+    let cfg = match crate::server::handlers::projects::load_projects_cfg() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("skill inventory: config load failed: {e:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "skill inventory unavailable",
+            )
+                .into_response();
+        }
+    };
+
+    if let Some(p) = &q.project {
+        if !cfg.projects.contains_key(p) {
+            return (StatusCode::NOT_FOUND, "project not found").into_response();
+        }
+    }
+    let profile_input = match &q.profile {
+        Some(name) => match cfg.defaults.agent_profiles.get(name) {
+            Some(ap) => Some(crate::skills::inventory::ProfileInput::Present(name, ap)),
+            None => return (StatusCode::NOT_FOUND, "profile not found").into_response(),
+        },
+        None => None,
+    };
+
+    let root = match crate::skills::inventory::skills_inventory_root() {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("skill inventory: root resolve failed: {e:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "skill inventory unavailable",
+            )
+                .into_response();
+        }
+    };
+
+    let inv = crate::skills::inventory::build_inventory(
+        &root,
+        q.project.as_deref(),
+        profile_input,
+        &crate::schema::skill_inventory::SkillInventoryBudget::default(),
+    );
+
+    if let Err(e) = crate::schema::skill_inventory::validate_inventory(&inv) {
+        tracing::warn!("skill inventory: validation failed: {e:#}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "skill inventory unavailable",
+        )
+            .into_response();
+    }
+    Json(inv).into_response()
 }
 
 // ─── memory ────────────────────────────────────────────────────────────

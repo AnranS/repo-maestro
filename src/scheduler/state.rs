@@ -213,6 +213,13 @@ pub struct RunState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 
+    /// If this run executes a `DeliverySpec`'s plan (F-127b), the owning
+    /// delivery id — the run side of the delivery↔run linkage. `None` for an
+    /// ordinary `maestro run`. Legacy RUN_STATE.json without the field reads as
+    /// `None` (serde default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_id: Option<String>,
+
     /// Sum of per-task `usage` across the run. Computed lazily on each
     /// state write so the UI header can show a live total.
     #[serde(default, skip_serializing_if = "Usage::is_zero")]
@@ -338,6 +345,7 @@ impl RunState {
             approvals_pending: vec![],
             task_order: order,
             session_id: None,
+            delivery_id: None,
             usage: Usage::default(),
             budget_tokens: None,
             pending_gate: None,

@@ -13,7 +13,7 @@ export function isDiscussion(m: MailMessage): boolean {
 const PALETTE = [
   "bg-sky-500/20 text-sky-200 border-sky-500/30",
   "bg-violet-500/20 text-violet-200 border-violet-500/30",
-  "bg-emerald-500/20 text-emerald-200 border-emerald-500/30",
+  "bg-emerald-500/20 text-status-success border-emerald-500/30",
   "bg-rose-500/20 text-rose-200 border-rose-500/30",
   "bg-cyan-500/20 text-cyan-200 border-cyan-500/30",
   "bg-orange-500/20 text-orange-200 border-orange-500/30",
@@ -82,8 +82,8 @@ export function DiscussionThread({ messages }: { messages: MailMessage[] }) {
               className="rounded-lg border border-amber-500/30 bg-amber-500/[0.07] p-3"
             >
               <div className="mb-1 flex items-center gap-1.5 text-[12px]">
-                <Crown size={13} className="text-amber-300" />
-                <span className="font-semibold text-amber-200">lead</span>
+                <Crown size={13} className="text-status-warning" />
+                <span className="font-semibold text-status-warning">lead</span>
                 <span className="text-ink-faint">·</span>
                 <span className="text-ink-faint">{t("discussion.synthesis")}</span>
                 {be && (

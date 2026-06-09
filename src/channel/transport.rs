@@ -405,6 +405,8 @@ mod tests {
             title: "run.started".to_string(),
             body: "hello".to_string(),
             attachments: Vec::new(),
+            delivery_id: None,
+            idempotency_key: None,
         };
 
         super::Transport::send(&transport, "session-1", &reply).unwrap();
@@ -428,6 +430,8 @@ mod tests {
             title: "title".to_string(),
             body: "body".to_string(),
             attachments: Vec::new(),
+            delivery_id: None,
+            idempotency_key: None,
         };
 
         super::Transport::send(&transport, "demo", &reply).unwrap();
@@ -486,6 +490,8 @@ mod tests {
             title: "title".to_string(),
             body: "body".to_string(),
             attachments: Vec::new(),
+            delivery_id: None,
+            idempotency_key: None,
         };
 
         let line = super::outbound_reply_jsonl_line(&reply).unwrap();
@@ -517,6 +523,8 @@ mod tests {
             title: "title".to_string(),
             body: "body".to_string(),
             attachments: Vec::new(),
+            delivery_id: None,
+            idempotency_key: None,
         };
 
         let transport = super::select_transport("demo", &entry, temp.path()).unwrap();
@@ -589,6 +597,8 @@ mod tests {
                 title: "title".to_string(),
                 body: "body".to_string(),
                 attachments: Vec::new(),
+                delivery_id: None,
+                idempotency_key: None,
             },
         )
         .unwrap_err();
@@ -623,6 +633,8 @@ exit 0
             title: "title".to_string(),
             body: "body line".to_string(),
             attachments: Vec::new(),
+            delivery_id: None,
+            idempotency_key: None,
         };
 
         super::BotmuxTransport::new()

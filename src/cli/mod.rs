@@ -108,6 +108,9 @@ pub enum Cmd {
     /// List, inspect, and tail historical runs.
     Runs(RunsArgs),
 
+    /// Intake a PM requirement into a DeliverySpec and inspect its stage (F-127a).
+    Delivery(DeliveryArgs),
+
     /// Rerun a finished run, optionally starting from a specific task.
     Rerun(RerunArgs),
 
@@ -335,6 +338,10 @@ pub struct ModelsArgs {
 
 #[derive(Parser, Debug)]
 pub struct DoctorArgs {
+    /// Focused diagnostics (additive; bare `maestro doctor` is unchanged).
+    #[command(subcommand)]
+    pub command: Option<DoctorCommand>,
+
     /// Print a machine-readable JSON report.
     #[arg(long)]
     pub json: bool,
@@ -342,6 +349,19 @@ pub struct DoctorArgs {
     /// Include passing-check details in the text report.
     #[arg(long)]
     pub verbose: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DoctorCommand {
+    /// Local runtime readiness: the six readiness checks + a timed provider probe.
+    Runtime(DoctorRuntimeArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct DoctorRuntimeArgs {
+    /// Print the machine-readable `maestro.runtime_health.v1` report.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -731,6 +751,151 @@ pub enum CodegraphSubcmd {
 pub struct RunsArgs {
     #[command(subcommand)]
     pub subcmd: Option<RunsSubcmd>,
+}
+
+#[derive(Parser, Debug)]
+pub struct DeliveryArgs {
+    #[command(subcommand)]
+    pub subcmd: DeliverySubcmd,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DeliverySubcmd {
+    /// Intake a requirement (markdown / plain text) into a new DeliverySpec.
+    /// Missing required fields become blocking clarify questions (never silent).
+    Intake {
+        /// Path to the requirement doc (read as text; the body is NOT copied in).
+        #[arg(long)]
+        file: String,
+        /// Delivery id. Defaults to a generated `d-<short>`.
+        #[arg(long)]
+        id: Option<String>,
+        /// Who proposed this requirement.
+        #[arg(long)]
+        proposer: Option<String>,
+        /// The source doc's remote uri (e.g. the Feishu doc URL). Recorded as a
+        /// ref — its body is NOT copied. Needed for `closeout --writeback`.
+        #[arg(long)]
+        source_uri: Option<String>,
+    },
+    /// Show a delivery's read-only stage projection.
+    Show {
+        /// Delivery id.
+        id: String,
+        /// Emit the projection as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List deliveries.
+    Ls,
+    /// Shape the spec (PRD + target projects + acceptance) and advance to Spec.
+    /// Deterministic — no AI. Frozen once a plan exists.
+    Spec {
+        /// Delivery id.
+        id: String,
+        /// PRD / objective text (falls back to the intake objective if empty).
+        #[arg(long, default_value = "")]
+        prd: String,
+        /// A registered target project (repeatable). Each must exist in projects.yaml.
+        #[arg(long = "project")]
+        projects: Vec<String>,
+        /// An acceptance criterion as "describe :: shell check" (repeatable). A
+        /// criterion without a check blocks confirm until one is supplied.
+        #[arg(long = "accept")]
+        accept: Vec<String>,
+        /// Who shaped the spec (audit).
+        #[arg(long)]
+        by: Option<String>,
+    },
+    /// Record the spec_confirm threshold (the ONLY writer of it). Refuses an
+    /// incomplete spec and records the gaps as blocking clarify questions.
+    ConfirmSpec {
+        /// Delivery id.
+        id: String,
+        /// Who confirmed (audit).
+        #[arg(long)]
+        by: Option<String>,
+    },
+    /// Generate a PLAN from the confirmed spec (reuses plan::synthesize) and
+    /// advance to Plan. Hard guard: spec_confirm.
+    Plan {
+        /// Delivery id.
+        id: String,
+        /// Regenerate an existing plan (allowed only before execute).
+        #[arg(long)]
+        force: bool,
+    },
+    /// Start a run from the generated plan and link it (delivery↔run), advancing
+    /// to Execute. Idempotent: refuses to start a second run.
+    Run {
+        /// Delivery id.
+        id: String,
+        /// Who started the run (recorded in the Execute audit row). The Web UI
+        /// passes `web-ui`; absent → no attributed actor.
+        #[arg(long)]
+        by: Option<String>,
+    },
+    /// Record the PM accept verdict — the explicit human threshold. Reads the
+    /// linked run's outcome; a verified run is never auto-accepted.
+    Accept {
+        /// Delivery id.
+        id: String,
+        /// accepted | partial | changes_requested | rejected.
+        #[arg(long)]
+        verdict: String,
+        /// Who accepted (required — the PM-accept threshold is never inferred).
+        #[arg(long)]
+        by: String,
+        /// Optional accept notes.
+        #[arg(long)]
+        notes: Option<String>,
+        /// A non-blocking follow-up debt item (repeatable). Required for partial,
+        /// and for accepting an unverified run.
+        #[arg(long = "debt")]
+        debt: Vec<String>,
+        /// Allow `accepted` on a finished-but-unverified run (requires --debt).
+        #[arg(long)]
+        accept_failed_with_debt: bool,
+    },
+    /// Record the closeout (evidence refs / summary) and advance to Closeout.
+    /// Optionally emit a Feishu/doc write-back intent.
+    Closeout {
+        /// Delivery id.
+        id: String,
+        /// A commit sha (repeatable).
+        #[arg(long = "commit")]
+        commits: Vec<String>,
+        /// A CI run url/id (repeatable).
+        #[arg(long = "ci")]
+        ci: Vec<String>,
+        /// A review ref (repeatable).
+        #[arg(long = "review")]
+        reviews: Vec<String>,
+        /// A doc revision id (repeatable).
+        #[arg(long = "doc-revision")]
+        doc_revisions: Vec<String>,
+        /// An evidence ref — run-relative path or remote uri (repeatable).
+        #[arg(long = "evidence")]
+        evidence: Vec<String>,
+        /// Emit a delivery.closeout write-back intent to the intake source doc.
+        #[arg(long)]
+        writeback: bool,
+        /// Who closed out (audit).
+        #[arg(long)]
+        by: Option<String>,
+    },
+    /// Reopen a `changes_requested` delivery for rework (round N → N+1). Supersedes the
+    /// prior round (archived) and resets back to `spec` — re-confirm + re-plan + re-run.
+    Reopen {
+        /// Delivery id.
+        id: String,
+        /// Who reopened (audit).
+        #[arg(long)]
+        by: Option<String>,
+        /// Why it was reopened (audit reason).
+        #[arg(long)]
+        reason: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1291,6 +1456,7 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
         Cmd::Stop(a) => commands::services::cmd_stop(a),
         Cmd::Tui(a) => cmd_tui(a).await,
         Cmd::Runs(a) => commands::runs::run(a).await,
+        Cmd::Delivery(a) => commands::delivery::run(a).await,
         Cmd::Memory(a) => commands::memory::run(a),
         Cmd::Learn(a) => commands::learn::run(a),
         Cmd::Pr(a) => match a {

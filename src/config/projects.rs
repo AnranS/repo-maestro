@@ -92,6 +92,15 @@ pub struct Defaults {
     #[serde(default)]
     pub gate_on_high_risk: bool,
 
+    /// F-126: when on, a finished task whose OBSERVED effects fall outside its
+    /// resolved tool policy (e.g. changed files with no write capability
+    /// requested) pauses for human approval before its patch integrates. Pure
+    /// post-run audit gate — never intercepts agent-internal tool calls. Default
+    /// off (no behavior change); dry-run is a no-op; absent policy is flagged not
+    /// gated; corrupt/untrusted policy is fail-closed (gated).
+    #[serde(default)]
+    pub gate_on_policy_violation: bool,
+
     /// Task routing policy: pick agent/model from a task's static traits
     /// (kind, whether its project touches a contract) before it runs. Empty =
     /// no routing, default per-project resolution applies.
@@ -126,6 +135,45 @@ pub struct Defaults {
     /// be committed. Empty (default) = single-root behavior, unchanged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sibling_workspaces: Vec<String>,
+
+    /// F-136b1: cross-platform agent-runtime hardening (env scrub + output
+    /// cap). Every control is OFF by default — an honest run under default
+    /// config behaves byte-for-byte as before. When enabled the controls are
+    /// HARD (a scrubbed var is genuinely absent from the child), never
+    /// "looks-enforced-but-warns".
+    #[serde(default)]
+    pub runtime_hardening: RuntimeHardening,
+}
+
+/// F-136b1 agent-runtime hardening knobs. Only env-borne secrets and captured
+/// log size are addressed here — NOT files the child can read under `HOME`
+/// (true FS isolation is a later Linux/container slice), NOT wall-clock /
+/// rlimit (those are F-136b2). The opaque provider `--sandbox` stays the
+/// provider's own concern; we never claim to enforce inside it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RuntimeHardening {
+    /// When true, the untrusted agent child (codex / cursor) is spawned with a
+    /// rebuilt environment: an explicit allowlist (PATH / HOME / locale / tmp +
+    /// the chosen provider's own auth env) instead of inheriting maestro's
+    /// whole environment, so unrelated env secrets are not handed to the agent.
+    /// HARD when on; default off. `HOME` is kept (providers authenticate via
+    /// their config dir under it) — so this blocks ENV-borne secrets only, NOT
+    /// files the child can still read under the home directory.
+    #[serde(default)]
+    pub scrub_env: bool,
+
+    /// Extra environment variable NAMES to keep when `scrub_env` is on — the
+    /// escape hatch for a var a provider/tool legitimately needs that the
+    /// built-in allowlist doesn't cover. Exact names only (no globs / prefixes).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_allow_env: Vec<String>,
+
+    /// Cap (bytes) on a single agent task's streamed log. `0` = no cap
+    /// (default — today's unbounded behavior). When exceeded, the log keeps the
+    /// head + a clear truncation marker + the tail (where the final result
+    /// lives); it is never silently dropped.
+    #[serde(default)]
+    pub max_task_log_bytes: usize,
 }
 
 impl Default for Defaults {
@@ -143,10 +191,12 @@ impl Default for Defaults {
             agent_profiles: BTreeMap::new(),
             copy_files: Vec::new(),
             gate_on_high_risk: false,
+            gate_on_policy_violation: false,
             routing: Vec::new(),
             auto_pr: false,
             refute_on_high_risk: false,
             sibling_workspaces: Vec::new(),
+            runtime_hardening: RuntimeHardening::default(),
         }
     }
 }

@@ -60,6 +60,7 @@ export function ChatInput({
     <div className="relative">
       <textarea
         ref={ref}
+        id="chat-composer"
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
@@ -75,33 +76,38 @@ export function ChatInput({
       />
 
       <div className="absolute right-2 bottom-2 flex items-center gap-1.5">
-        {/* Plan / Exec mode toggle */}
-        {!streaming && (
-          <div className="flex items-center bg-bg-inset border border-line rounded-md p-0.5">
-            <button
-              onClick={() => setMode("plan")}
-              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                mode === "plan"
-                  ? "bg-amber-500/20 text-amber-200"
-                  : "text-ink-faint hover:text-ink-dim"
-              }`}
-              title="plan mode — analyse only, no action blocks"
-            >
-              <Eye size={10} /> plan
-            </button>
-            <button
-              onClick={() => setMode("exec")}
-              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                mode === "exec"
-                  ? "bg-emerald-500/20 text-emerald-200"
-                  : "text-ink-faint hover:text-ink-dim"
-              }`}
-              title="exec mode — orchestrator can emit action blocks"
-            >
-              <Play size={10} /> exec
-            </button>
-          </div>
-        )}
+        {/* Plan / Exec mode toggle — stays in place while streaming (disabled +
+            dimmed) so the control row never reflows when send↔stop swaps. */}
+        <div
+          className={`flex items-center bg-bg-inset border border-line rounded-md p-0.5 ${
+            streaming ? "pointer-events-none opacity-40" : ""
+          }`}
+        >
+          <button
+            onClick={() => setMode("plan")}
+            disabled={streaming}
+            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+              mode === "plan"
+                ? "bg-amber-500/20 text-status-warning"
+                : "text-ink-faint hover:text-ink-dim"
+            }`}
+            title="plan mode — analyse only, no action blocks"
+          >
+            <Eye size={10} /> plan
+          </button>
+          <button
+            onClick={() => setMode("exec")}
+            disabled={streaming}
+            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+              mode === "exec"
+                ? "bg-emerald-500/20 text-status-success"
+                : "text-ink-faint hover:text-ink-dim"
+            }`}
+            title="exec mode — orchestrator can emit action blocks"
+          >
+            <Play size={10} /> exec
+          </button>
+        </div>
 
         {streaming ? (
           <button

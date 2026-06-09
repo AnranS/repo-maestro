@@ -94,7 +94,7 @@ function FileNodeBox({ data }: NodeProps<Node<FileNodeData>>) {
         borderLeftWidth: 3,
         opacity: data.dim ? 0.4 : 1,
       }}
-      className="flex flex-col justify-center rounded-lg border border-line bg-bg-panel px-2.5 transition-opacity hover:border-line-soft"
+      className="graph-node flex flex-col justify-center rounded-lg border border-line px-2.5 transition-opacity hover:border-line-soft"
     >
       <Handle type="target" position={Position.Left} className="!w-1 !h-1 !bg-line-soft !border-0" />
       <div className="flex items-center gap-1.5">
@@ -122,7 +122,7 @@ function LayerNodeBox({ data }: NodeProps<Node<LayerNodeData>>) {
   return (
     <div
       style={{ width: LAYER_W, height: LAYER_H, borderColor: data.color }}
-      className="flex flex-col justify-center rounded-xl border-2 bg-bg-panel px-3.5 shadow-lg hover:bg-bg-hover"
+      className="graph-node flex flex-col justify-center rounded-lg border-2 px-3.5 hover:bg-bg-hover"
     >
       <Handle type="target" position={Position.Left} className="!w-1 !h-1 !bg-line-soft !border-0" />
       <div className="flex items-center gap-2">
@@ -240,7 +240,8 @@ function groupedView(
     const target = forward ? r.b : r.a
     const total = r.ab + r.ba
     const mutual = r.ab > 0 && r.ba > 0
-    const arrow = { type: MarkerType.ArrowClosed, color: "#64748b", width: 13, height: 13 }
+    const stroke = GRAPH_CANVAS.muted
+    const arrow = { type: MarkerType.ArrowClosed, color: stroke, width: 13, height: 13 }
     return {
       id: `${source}->${target}-${i}`,
       source,
@@ -248,9 +249,9 @@ function groupedView(
       label: String(total),
       type: "smoothstep",
       pathOptions: { borderRadius: 12 },
-      style: { stroke: "#64748b", strokeWidth: Math.min(1 + total / 8, 5) },
-      labelStyle: { fill: "#94a3b8", fontSize: 9 },
-      labelBgStyle: { fill: "#0b0f17" },
+      style: { stroke, strokeWidth: Math.min(1 + total / 8, 5) },
+      labelStyle: { fill: GRAPH_CANVAS.labelFg, fontSize: 9 },
+      labelBgStyle: { fill: GRAPH_CANVAS.labelBg },
       markerEnd: arrow,
       markerStart: mutual ? arrow : undefined,
     }
@@ -375,7 +376,7 @@ export function CodeGraphView() {
       <div className="flex-1 flex flex-col min-h-0">
         <header className="px-6 py-3 border-b border-line flex items-center gap-3 flex-wrap">
           <h1 className="flex items-center gap-2 text-base font-semibold">
-            <FileCode size={16} className="text-blue-300" /> {t("tab.codegraph")}
+            <FileCode size={16} className="text-accent" /> {t("tab.codegraph")}
           </h1>
           {graph && (
             <span
@@ -495,7 +496,7 @@ export function CodeGraphView() {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder={t("codegraph.searchPlaceholder")}
-                className="w-44 rounded-md border border-line bg-bg-inset pl-7 pr-2 py-1 text-xs focus:outline-none focus:border-blue-600"
+                className="w-44 rounded-md border border-line bg-bg-inset pl-7 pr-2 py-1 text-xs focus:outline-none focus:border-accent"
               />
             </div>
           )}
@@ -532,7 +533,7 @@ export function CodeGraphView() {
           </div>
         )}
 
-        <div className="flex-1 min-h-0 arch-flow">
+        <div className="graph-canvas flex-1 min-h-0 arch-flow">
           {graph ? (
             <GraphCanvas
               graph={graph}
@@ -787,7 +788,7 @@ function GraphCanvas({
       <Background variant={BackgroundVariant.Dots} gap={20} size={1} color={GRAPH_CANVAS.grid} />
       {base.hiddenCount > 0 && (
         <Panel position="top-center">
-          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[11px] text-amber-200 shadow">
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[11px] text-status-warning shadow">
             showing the {MAX_FILE_NODES} largest files · {base.hiddenCount} more hidden — type in search to narrow
           </div>
         </Panel>
@@ -824,9 +825,9 @@ function SymbolPanel({
   const jump = (line?: number | null) =>
     root ? `vscode://file${root}/${path}${line != null ? `:${line}` : ""}` : undefined
   return (
-    <div className="absolute right-0 top-0 bottom-0 z-20 flex w-80 flex-col border-l border-line bg-bg-panel shadow-2xl">
+    <div className="absolute right-0 top-0 bottom-0 z-drawer flex w-80 flex-col border-l border-line bg-bg-panel shadow-overlay">
       <div className="flex items-start gap-2 border-b border-line px-3 py-2.5">
-        <FileCode size={14} className="mt-0.5 shrink-0 text-blue-300" />
+        <FileCode size={14} className="mt-0.5 shrink-0 text-accent" />
         <div className="min-w-0 flex-1">
           <div className="truncate font-mono text-xs text-ink" title={path}>
             {base(path)}
@@ -901,7 +902,7 @@ function TourDrawer({
   onPick: (paths: string[]) => void
 }) {
   return (
-    <div className="absolute left-0 top-0 bottom-0 z-20 flex w-96 flex-col border-r border-line bg-bg-panel shadow-2xl">
+    <div className="absolute left-0 top-0 bottom-0 z-drawer flex w-96 flex-col border-r border-line bg-bg-panel shadow-overlay">
       <div className="flex items-center gap-2 border-b border-line px-3 py-2.5">
         <MapIcon size={14} className="text-violet-300" />
         <span className="flex-1 text-sm font-semibold text-ink">{t("codegraph.tour")}</span>
@@ -993,7 +994,7 @@ function EngineChooser({ onBuilt }: { onBuilt: () => void }) {
         <Cpu size={11} /> {t("codegraph.engine")} <ChevronDown size={10} />
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-20 mt-1 w-[22rem] rounded-lg border border-line bg-bg-panel p-2 shadow-xl">
+        <div className="absolute left-0 top-full z-dropdown mt-1 w-[22rem] rounded-lg border border-line bg-bg-panel p-2 shadow-overlay">
           <div className="px-1 pb-1 text-[10px] uppercase tracking-wider text-ink-faint">
             {t("codegraph.engineTitle")}
           </div>
@@ -1008,8 +1009,8 @@ function EngineChooser({ onBuilt }: { onBuilt: () => void }) {
                   <span
                     className={`rounded px-1 text-[9px] ${
                       e.cost === "free"
-                        ? "bg-emerald-500/15 text-emerald-300"
-                        : "bg-amber-500/15 text-amber-300"
+                        ? "bg-emerald-500/15 text-status-success"
+                        : "bg-amber-500/15 text-status-warning"
                     }`}
                   >
                     {e.cost}

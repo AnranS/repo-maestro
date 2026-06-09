@@ -61,7 +61,7 @@ appointed representative at an online or offline event.
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the project maintainers by opening a confidential issue or, for
 sensitive matters, via private GitHub Security Advisory on the
-[maestro repository](https://github.com/AnranS/repo-maestro). All complaints will
+[maestro repository](https://github.com/AnranS/maestro). All complaints will
 be reviewed and investigated promptly and fairly.
 
 All project maintainers are obligated to respect the privacy and security of

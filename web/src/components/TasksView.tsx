@@ -4,7 +4,6 @@ import type { RunEvidence, RunReplay, RunState, TaskState } from "../types"
 import { api } from "../api"
 import { t } from "../i18n"
 import { DagView } from "./DagView"
-import { TaskRow } from "./TaskRow"
 import { GoalPanel } from "./GoalPanel"
 import { EvidencePanel } from "./tasks/EvidencePanel"
 import { CoordinationPanel } from "./tasks/CoordinationPanel"
@@ -14,6 +13,9 @@ import { AutoActionsPanel, CostPanel, RunSummaryStrip, StatusPill, taskSummary }
 import { FailureRecoveryPanel } from "./tasks/FailureRecoveryPanel"
 import { GateBanner } from "./tasks/GateBanner"
 import { OutcomePanel } from "./tasks/OutcomePanel"
+import { RunHealthStrip } from "./RunHealthStrip"
+import { TaskInspector } from "./TaskInspector"
+import { StatusChip, statusToken } from "./ui/StatusChip"
 
 interface Props {
   state: RunState | null
@@ -60,7 +62,7 @@ export function TasksView({ state, onJumpToSession }: Props) {
         <div className="max-w-4xl mx-auto px-6 py-16">
           <div className="border border-line bg-bg-panel rounded-lg p-6">
             <div className="flex items-start gap-4">
-              <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-md border border-blue-500/30 bg-blue-500/10 text-blue-300">
+              <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-md border border-blue-500/30 bg-blue-500/10 text-status-info">
                 <Terminal size={18} />
               </div>
               <div className="min-w-0 flex-1">
@@ -106,6 +108,8 @@ export function TasksView({ state, onJumpToSession }: Props) {
   return (
     <div className="flex-1 overflow-y-auto scrollbar-thin">
       <div className="max-w-6xl mx-auto p-6 space-y-6">
+        {/* F-UI-001: run health strip — the top band of the Run Inspector */}
+        <RunHealthStrip state={state} />
         {/* Run header / actions */}
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
           <div className="flex-1 min-w-0">
@@ -164,7 +168,7 @@ export function TasksView({ state, onJumpToSession }: Props) {
               <button
                 onClick={handleCancel}
                 disabled={cancelling}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-red-500/15 text-red-200 hover:bg-red-500/25 border border-red-500/30 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-red-500/15 text-status-danger hover:bg-red-500/25 border border-red-500/30 disabled:opacity-50"
                 title={t("tasks.cancelRun")}
               >
                 <Square size={11} fill="currentColor" />
@@ -174,45 +178,13 @@ export function TasksView({ state, onJumpToSession }: Props) {
           </div>
         </div>
 
-        <GateBanner state={state} />
-
         <RunSummaryStrip summary={summary} />
 
-        <FailureRecoveryPanel state={state} />
+        <GateBanner runId={state.run_id} />
 
-        <CostPanel state={state} />
-
-        <AutoActionsPanel actions={state.auto_actions} />
-
-        <GoalPanel
-          goal={state.goal}
-          results={state.acceptance_results}
-          verified={state.verified}
-          status={state.status}
-        />
-
-        {(state.pending_gate === "outcome" ||
-          ["done", "failed", "cancelled"].includes(state.status)) && (
-          <OutcomePanel
-            runId={state.run_id}
-            autoLoad={state.pending_gate === "outcome"}
-          />
-        )}
-
-        {evidence && <EvidencePanel evidence={evidence} replay={replay} prBody={prBody} />}
-
-        <FindingsPanel
-          runId={state.run_id}
-          refreshKey={`${state.run_id}:${summary.terminal}:${summary.running}`}
-        />
-
-        <CoordinationPanel
-          refreshKey={`${state.run_id}:${summary.terminal}:${summary.running}`}
-        />
-
-        {/* One panel for tasks — graph / list / timeline are three lenses on
-            the same set, so they share a header instead of stacking. */}
-        <section className="bg-bg-panel border border-line rounded-xl">
+        {/* Task lens — the core surface, kept right after the gate so it is
+            never buried under the (now collapsible) secondary panels. */}
+        <section className="bg-bg-panel border border-line rounded-lg">
           <div className="px-4 py-2.5 border-b border-line flex items-center gap-3">
             <div className="flex items-center rounded-lg border border-line bg-bg-inset p-0.5">
               {(["graph", "lanes", "list", "timeline"] as const).map((k) => (
@@ -246,11 +218,7 @@ export function TasksView({ state, onJumpToSession }: Props) {
             </div>
           )}
           {taskTab === "list" && (
-            <div className="divide-y divide-line/40">
-              {tasks.map((task) => (
-                <TaskRow key={task.id} task={task} />
-              ))}
-            </div>
+            <InspectorLayout tasks={tasks} runId={state.run_id} />
           )}
           {taskTab === "timeline" && (
             <div className="p-4">
@@ -258,6 +226,92 @@ export function TasksView({ state, onJumpToSession }: Props) {
             </div>
           )}
         </section>
+
+        <FailureRecoveryPanel state={state} />
+
+        <CostPanel state={state} />
+
+        <AutoActionsPanel actions={state.auto_actions} />
+
+        <GoalPanel
+          goal={state.goal}
+          results={state.acceptance_results}
+          verified={state.verified}
+          status={state.status}
+        />
+
+        {(state.pending_gate === "outcome" ||
+          ["done", "failed", "cancelled"].includes(state.status)) && (
+          <OutcomePanel
+            runId={state.run_id}
+            autoLoad={state.pending_gate === "outcome"}
+          />
+        )}
+
+        {evidence && <EvidencePanel evidence={evidence} replay={replay} prBody={prBody} />}
+
+        <FindingsPanel
+          runId={state.run_id}
+          refreshKey={`${state.run_id}:${summary.terminal}:${summary.running}`}
+        />
+
+        <CoordinationPanel
+          refreshKey={`${state.run_id}:${summary.terminal}:${summary.running}`}
+        />
+      </div>
+    </div>
+  )
+}
+
+/** F-UI-001 Step 1b: the Run Inspector body — left task-list selector + right
+ *  selected-task inspector tabs. The graph/lanes/timeline sub-tabs remain
+ *  separate lenses; this is the default "list" lens, re-homed as an inspector. */
+function InspectorLayout({
+  tasks,
+  runId,
+}: {
+  tasks: TaskState[]
+  runId: string
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(
+    tasks[0]?.id ?? null,
+  )
+  // Keep the selection valid as the task set changes.
+  useEffect(() => {
+    if (!tasks.some((t) => t.id === selectedId)) {
+      setSelectedId(tasks[0]?.id ?? null)
+    }
+  }, [tasks, selectedId])
+  const selected = tasks.find((t) => t.id === selectedId) ?? null
+
+  return (
+    <div className="flex min-h-[24rem] flex-col md:flex-row">
+      {/* left: task list selector */}
+      <div className="shrink-0 divide-y divide-line/40 border-b border-line md:w-72 md:border-b-0 md:border-r">
+        {tasks.map((task) => (
+          <button
+            key={task.id}
+            onClick={() => setSelectedId(task.id)}
+            className={`flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] ${
+              task.id === selectedId ? "bg-bg-hover" : "hover:bg-bg-hover/40"
+            }`}
+          >
+            <span className="flex-1 truncate font-mono text-ink-dim">
+              {task.id}
+            </span>
+            <StatusChip status={task.status} />
+          </button>
+        ))}
+      </div>
+      {/* right: selected task inspector */}
+      <div className="flex min-h-0 flex-1">
+        {selected ? (
+          <TaskInspector task={selected} runId={runId} />
+        ) : (
+          <div className="m-auto p-6 text-center text-[12px] text-ink-faint">
+            select a task
+          </div>
+        )}
       </div>
     </div>
   )
@@ -286,19 +340,6 @@ function CommandHint({ label, command }: { label: string; command: string }) {
 
 /** Swimlanes: one lane per project, tasks as status chips, so you can see at a
  *  glance which projects' agents are running in parallel (Cursor-style). */
-function laneChip(status: string): string {
-  return (
-    {
-      done: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
-      running: "border-blue-500/40 bg-blue-500/15 text-blue-300",
-      failed: "border-red-500/30 bg-red-500/10 text-red-300",
-      awaiting_approval: "border-amber-500/30 bg-amber-500/10 text-amber-300",
-      cancelled: "border-line bg-bg-inset text-ink-dim",
-      skipped: "border-line bg-bg-inset text-ink-faint",
-    }[status] ?? "border-line bg-bg-inset text-ink-faint"
-  )
-}
-
 function LanesView({ tasks }: { tasks: TaskState[] }) {
   const byProject = new Map<string, TaskState[]>()
   for (const tk of tasks) {
@@ -329,9 +370,9 @@ function LanesView({ tasks }: { tasks: TaskState[] }) {
                 <span
                   key={tk.id}
                   title={`${tk.id} · ${tk.status} · ${tk.agent}`}
-                  className={`inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[10px] ${laneChip(
-                    tk.status,
-                  )} ${tk.status === "running" ? "animate-pulse" : ""}`}
+                  className={`inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[10px] ${
+                    statusToken(tk.status).chip
+                  } ${tk.status === "running" ? "animate-pulse" : ""}`}
                 >
                   {tk.id.replace(/^T_(change_|verify_)?/, "")}
                 </span>

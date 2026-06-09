@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 /// Adapter that shells out to the `cursor-agent` CLI.
@@ -58,15 +58,23 @@ impl AgentAdapter for CursorAdapter {
         // Own process group so a timeout SIGKILLs the whole subtree (cursor-agent
         // plus every tool it spawned), not just the direct child.
         crate::proc::isolate_process_group(&mut cmd);
+        // F-136b1: rebuild the child env from an allowlist (off by default) so
+        // unrelated env-borne secrets are not handed to the untrusted agent.
+        if task.harden.scrub_env {
+            crate::runtime_harden::apply_env_scrub(
+                &mut cmd,
+                self.name(),
+                &task.harden.extra_allow_env,
+            );
+        }
 
         tracing::debug!(?task.task_id, ?task.workspace, "spawning cursor-agent (stream-json)");
 
-        let mut log_file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&task.log_path)
-            .await
-            .with_context(|| format!("open log file {:?}", task.log_path))?;
+        // F-136b1: cap the task log (0 = unbounded passthrough, the default).
+        let mut log_file =
+            crate::runtime_harden::CappedLog::open(&task.log_path, task.harden.max_task_log_bytes)
+                .await
+                .with_context(|| format!("open log file {:?}", task.log_path))?;
 
         log_file
             .write_all(
@@ -106,37 +114,32 @@ impl AgentAdapter for CursorAdapter {
             .take()
             .context("cursor-agent stderr pipe missing")?;
 
-        // stderr is drained in a background task and tee'd into the log so
-        // a noisy CLI doesn't fill its pipe and block stdout.
+        // stderr is drained in a background task and tee'd into the log so a
+        // noisy CLI doesn't fill its pipe and block stdout. F-136b1 B3: the
+        // shared pump hard-bounds it (disk + memory via a chunked drain),
+        // writes a marker when it caps, and reads to the child's real EOF so the
+        // pipe never blocks the child.
         let stderr_log_path = task.log_path.clone();
+        let stderr_cap = task.harden.max_task_log_bytes;
         let stderr_pump = tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            let mut log = match tokio::fs::OpenOptions::new()
-                .append(true)
-                .open(&stderr_log_path)
-                .await
-            {
-                Ok(f) => f,
-                Err(_) => return,
-            };
-            while let Ok(Some(line)) = lines.next_line().await {
-                let red = crate::schema::redaction::redact_secret_blob(&line);
-                let _ = log.write_all(b"[stderr] ").await;
-                let _ = log.write_all(red.as_bytes()).await;
-                let _ = log.write_all(b"\n").await;
-            }
+            crate::runtime_harden::pump_stderr_capped(stderr, &stderr_log_path, stderr_cap).await;
         });
 
         let stream_fut = drive_stream(stdout, &mut log_file);
-        let parsed = match tokio::time::timeout(task.timeout, stream_fut).await {
-            Ok(result) => result?,
-            Err(_) => {
-                if let Some(pid) = child_pid {
-                    crate::proc::kill_process_group(pid);
-                }
-                stderr_pump.abort();
-                anyhow::bail!("cursor-agent timeout for task {}", task.task_id);
+        let outcome = tokio::time::timeout(task.timeout, stream_fut).await;
+        // On timeout, tear down the whole subtree before finalizing the log.
+        if outcome.is_err() {
+            if let Some(pid) = child_pid {
+                crate::proc::kill_process_group(pid);
             }
+            stderr_pump.abort();
+        }
+        // F-136b1 B2: finalize on EVERY path (success / parse-error / timeout) so
+        // a truncated log always gets its marker + tail — never silent. Idempotent.
+        let _ = log_file.finalize().await;
+        let parsed = match outcome {
+            Ok(result) => result?,
+            Err(_) => anyhow::bail!("cursor-agent timeout for task {}", task.task_id),
         };
 
         let status = child
@@ -220,7 +223,10 @@ fn cursor_policy_note(allow: &crate::modes::AllowedTools) -> String {
 ///   - capture session id from `system`/`assistant`/`result` events,
 ///   - take the canonical reply from the `result` event,
 ///   - parse `usage` from the same `result`.
-async fn drive_stream<R>(stdout: R, log: &mut tokio::fs::File) -> Result<AgentResult>
+async fn drive_stream<R>(
+    stdout: R,
+    log: &mut crate::runtime_harden::CappedLog,
+) -> Result<AgentResult>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -378,10 +384,7 @@ mod tests {
         let stream = events.join("\n");
         let cursor = std::io::Cursor::new(stream.into_bytes());
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let mut log = tokio::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(tmp.path())
+        let mut log = crate::runtime_harden::CappedLog::open(tmp.path(), 0)
             .await
             .unwrap();
         drive_stream(tokio::io::BufReader::new(cursor), &mut log)
@@ -459,5 +462,118 @@ mod tests {
         assert!(!rendered.contains(&"--force".to_string()));
         assert!(rendered.contains(&"--model".to_string()));
         assert!(rendered.contains(&"--resume".to_string()));
+    }
+
+    /// B2: even when the agent exits non-zero (so `run` returns Err), a log that
+    /// exceeded the cap must still carry the truncation marker — finalize runs on
+    /// every path, not just the clean-parse path. Drives a fake cursor-agent
+    /// (Unix shell) that over-produces valid stream-json then exits 1.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn finalizes_truncation_marker_even_when_agent_exits_nonzero() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("fake-cursor.sh");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\ni=0\nwhile [ $i -lt 40 ]; do printf '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"chunk %s with padding padding padding padding\"}]}}\\n' \"$i\"; i=$((i+1)); done\nprintf '{\"type\":\"result\",\"result\":\"done\"}\\n'\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let log_path = dir.path().join("task.log");
+        let task = AgentTask {
+            task_id: "T_cap".into(),
+            workspace: dir.path().to_path_buf(),
+            prompt: "hi".into(),
+            context: Vec::new(),
+            timeout: std::time::Duration::from_secs(30),
+            mode: crate::adapter::ExecutionMode::Apply,
+            resume_chat_id: None,
+            log_path: log_path.clone(),
+            trajectory: None,
+            model: None,
+            role_prelude: None,
+            allowed_tools: Default::default(),
+            harden: crate::runtime_harden::Hardening {
+                scrub_env: false,
+                extra_allow_env: Vec::new(),
+                max_task_log_bytes: 512,
+            },
+        };
+        let adapter = CursorAdapter {
+            binary: fake.to_string_lossy().to_string(),
+        };
+        let res = adapter.run(task).await;
+        assert!(res.is_err(), "non-zero agent exit surfaces as an error");
+        let body = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            body.contains("task log truncated at cap"),
+            "marker written despite the non-zero exit; log was {} bytes",
+            body.len()
+        );
+    }
+
+    /// B3 (re-review): the stderr pump must DRAIN to the child's real EOF, not
+    /// stop after `cap` bytes — otherwise a child that writes more stderr than
+    /// the cap blocks (full pipe) or gets EPIPE and fails. Fake agent floods
+    /// stderr with ~480 KB (>> the OS pipe buffer), THEN writes a valid stdout
+    /// result and exits 0. The adapter must SUCCEED (proving the child wasn't
+    /// blocked/SIGPIPE'd), the stdout result must parse, and the log must be
+    /// bounded with the stderr marker.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stderr_drains_to_eof_so_child_completes_even_when_stderr_exceeds_cap() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("fake-cursor-noisy.sh");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\ni=0\nwhile [ $i -lt 8000 ]; do echo \"noisy stderr line $i padding padding padding padding\" >&2; i=$((i+1)); done\nprintf '{\"type\":\"result\",\"result\":\"final answer\"}\\n'\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let log_path = dir.path().join("task.log");
+        let task = AgentTask {
+            task_id: "T_noisy".into(),
+            workspace: dir.path().to_path_buf(),
+            prompt: "hi".into(),
+            context: Vec::new(),
+            timeout: std::time::Duration::from_secs(30),
+            mode: crate::adapter::ExecutionMode::Apply,
+            resume_chat_id: None,
+            log_path: log_path.clone(),
+            trajectory: None,
+            model: None,
+            role_prelude: None,
+            allowed_tools: Default::default(),
+            harden: crate::runtime_harden::Hardening {
+                scrub_env: false,
+                extra_allow_env: Vec::new(),
+                max_task_log_bytes: 2048,
+            },
+        };
+        let adapter = CursorAdapter {
+            binary: fake.to_string_lossy().to_string(),
+        };
+        let parsed = adapter
+            .run(task)
+            .await
+            .expect("child completes (exit 0) — stderr was drained, not SIGPIPE'd / blocked");
+        assert_eq!(
+            parsed.transcript_summary, "final answer",
+            "stdout result parsed"
+        );
+        let body = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            body.contains("stderr truncated (cap exceeded)"),
+            "stderr capped + marked"
+        );
+        assert!(
+            body.len() < 32_000,
+            "log bounded despite ~480 KB of stderr, got {}",
+            body.len()
+        );
     }
 }

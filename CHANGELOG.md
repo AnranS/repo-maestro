@@ -79,4 +79,4 @@ rationale-annotated list with file anchors and how-to-resume notes. In brief:
 
 ---
 
-[Unreleased]: https://github.com/AnranS/repo-maestro/commits/main
+[Unreleased]: https://github.com/AnranS/maestro/commits/main

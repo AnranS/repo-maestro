@@ -132,6 +132,9 @@ pub fn chat_dir() -> Result<PathBuf> {
 }
 
 pub fn session_path(id: &str) -> Result<PathBuf> {
+    // F-119: guard the id BEFORE any filesystem access — a raw `{id}.json` concat
+    // is a path-traversal sink (`../../x`, URL-supplied ids). Reject up front.
+    paths::validate_path_component("chat session id", id)?;
     Ok(chat_dir()?.join(SESSIONS_DIR).join(format!("{id}.json")))
 }
 
@@ -230,6 +233,23 @@ pub fn update_title_from_first_message(s: &mut Session, user_text: &str) {
             .collect();
         if !trimmed.trim().is_empty() {
             s.title = trimmed;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_path_guards_unsafe_ids_before_fs() {
+        // F-119: a traversal / multi-segment / empty id is rejected before any
+        // filesystem access (validation runs ahead of `chat_dir()`).
+        for bad in ["../x", "a/b", "..", ""] {
+            assert!(
+                session_path(bad).is_err(),
+                "session_path({bad:?}) must reject"
+            );
         }
     }
 }

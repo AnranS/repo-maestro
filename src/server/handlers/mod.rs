@@ -3,6 +3,7 @@
 //! `server::mod` references them by their full path.
 
 pub mod chat;
+pub mod deliveries;
 pub mod fs;
 pub mod misc;
 pub mod projects;

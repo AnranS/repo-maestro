@@ -116,7 +116,10 @@ pub(crate) async fn run_live(a: RunArgs, run_id: Option<String>) -> Result<RunSt
 /// Returns Err with the offending task ids if any task's `project`
 /// references something not registered in `projects.yaml`. `_global` is
 /// always valid (verify / shell tasks don't need a project).
-fn check_plan_project_drift(plan: &crate::config::Plan, projects: &ProjectsConfig) -> Result<()> {
+pub(crate) fn check_plan_project_drift(
+    plan: &crate::config::Plan,
+    projects: &ProjectsConfig,
+) -> Result<()> {
     let mut bad: Vec<(String, String)> = Vec::new();
     for t in &plan.tasks {
         if t.project.is_empty() || t.project == "_global" {
@@ -402,7 +405,7 @@ pub async fn rerun(a: RerunArgs) -> Result<()> {
 /// are seeded), and run the rest. Refuses a run that still looks alive unless
 /// `--force`.
 pub async fn resume(a: ResumeArgs) -> Result<()> {
-    use crate::scheduler::liveness::{classify_run, RunLiveness};
+    use crate::schema::resume::ResumeIssueCode;
 
     let dir = match a.run.as_deref() {
         None | Some("current") => {
@@ -416,38 +419,51 @@ pub async fn resume(a: ResumeArgs) -> Result<()> {
             d
         }
     };
-    let state = RunState::load(&dir)?;
 
-    if matches!(classify_run(&state), RunLiveness::Live) && !a.force {
-        anyhow::bail!(
-            "run {} still appears alive (pid {}); use --force to resume anyway",
-            state.run_id,
-            state.pid
+    // F-117: recompute the resume verdict from disk (descriptor + state + plan +
+    // event ledger + output snapshots) before seeding any completed task.
+    let report = crate::scheduler::resume::validate_resume_target(&dir, a.force)?;
+
+    // A blocking issue refuses FIRST — even on an otherwise-complete run. A
+    // `Done + all-done` run whose PLAN drifted or whose event ledger is corrupt
+    // must surface that, never silently no-op (the `already_complete` info issue
+    // does not suppress a co-existing data-integrity refusal).
+    let blocked = report.issues.iter().any(|i| i.code.blocks(a.force));
+    if blocked {
+        eprintln!(
+            "✗ refusing to resume run {} — the prior run is not safely seedable:",
+            report.run_id
         );
+        for issue in &report.issues {
+            eprintln!("  - [{}] {}", issue.code.as_str(), issue.detail);
+        }
+        if report.has(ResumeIssueCode::TerminalRun) {
+            eprintln!("  → terminal run: use `maestro rerun` instead");
+        }
+        if !a.force && report.issues.iter().any(|i| i.code.force_overridable()) {
+            eprintln!("  → only liveness uncertainty can be overridden with --force");
+        }
+        anyhow::bail!("resume refused for run {}", report.run_id);
     }
 
-    let total = state.tasks.len();
-    let done: Vec<String> = state
-        .tasks
-        .iter()
-        .filter(|(_, t)| t.status == TaskStatus::Done)
-        .map(|(id, _)| id.clone())
-        .collect();
-    if done.len() == total {
+    // Cleanly complete (no blocking issue) — a true no-op.
+    if report.already_complete {
         println!(
-            "→ run {} already complete ({total}/{total} done); nothing to resume",
-            state.run_id
+            "→ run {} already complete; nothing to resume",
+            report.run_id
         );
         return Ok(());
     }
 
-    let pfile = paths::projects_file()?;
-    let projects = ProjectsConfig::load(&pfile)?;
+    // Happy path: seed the completed tasks and run the rest.
+    let state = RunState::load(&dir)?;
+    let projects = ProjectsConfig::load(&paths::projects_file()?)?;
     let plan = Plan::load(&dir.join(paths::PLAN_SNAPSHOT))?;
-
+    let done = report.reusable_done_tasks.clone();
+    let total = state.tasks.len();
     println!(
-        "→ resuming run {} — reusing {} completed task(s), continuing {} remaining",
-        state.run_id,
+        "→ resume guard ok for {} — reusing {} completed task(s), continuing {}",
+        report.run_id,
         done.len(),
         total - done.len()
     );

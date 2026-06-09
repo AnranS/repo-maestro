@@ -1,24 +1,16 @@
 [package]
-name = "maestro-cli"
+name = "maestro"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
 description = "A workflow orchestrator for changes that span many repos — plan a dependency-ordered DAG, run with contract gates and verification, recover on failure. Local-first."
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/AnranS/repo-maestro"
-homepage = "https://github.com/AnranS/repo-maestro"
-documentation = "https://github.com/AnranS/repo-maestro#documentation"
+repository = "https://github.com/AnranS/maestro"
+homepage = "https://github.com/AnranS/maestro"
+documentation = "https://github.com/AnranS/maestro#documentation"
 keywords = ["orchestrator", "multi-repo", "dag", "agent", "local-first"]
 categories = ["command-line-utilities", "development-tools"]
-
-[lib]
-name = "maestro"
-path = "src/lib.rs"
-
-[[bin]]
-name = "maestro"
-path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"

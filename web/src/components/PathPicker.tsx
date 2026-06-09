@@ -94,18 +94,18 @@ export function PathPicker({ initialPath, title, onSelect, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-4"
+      className="fixed inset-0 z-nested-modal bg-black/70 flex items-center justify-center p-4"
       onClick={onClose}
     >
       <div
-        className="bg-bg-panel border border-line rounded-xl w-full max-w-2xl shadow-2xl flex flex-col"
+        className="bg-bg-panel border border-line rounded-lg w-full max-w-2xl shadow-overlay flex flex-col"
         onClick={(e) => e.stopPropagation()}
         style={{ maxHeight: "min(80vh, 600px)" }}
       >
         {/* header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-line shrink-0">
           <div className="flex items-center gap-2">
-            <Folder size={14} className="text-blue-300" />
+            <Folder size={14} className="text-accent" />
             <h2 className="text-sm font-semibold">
               {title ?? t("picker.title")}
             </h2>
@@ -190,7 +190,7 @@ export function PathPicker({ initialPath, title, onSelect, onClose }: Props) {
             </p>
           )}
           {err && (
-            <p className="mx-5 my-4 text-xs text-red-300 bg-red-500/10 border border-red-500/30 rounded px-2.5 py-2 inline-flex items-start gap-2">
+            <p className="mx-5 my-4 text-xs text-status-danger bg-red-500/10 border border-red-500/30 rounded px-2.5 py-2 inline-flex items-start gap-2">
               <AlertCircle size={12} className="mt-0.5 shrink-0" />
               {err}
             </p>
@@ -222,7 +222,7 @@ export function PathPicker({ initialPath, title, onSelect, onClose }: Props) {
                             className={
                               e.kind === "symlink"
                                 ? "text-cyan-300"
-                                : "text-blue-300"
+                                : "text-accent"
                             }
                           />
                         ) : (
@@ -240,7 +240,7 @@ export function PathPicker({ initialPath, title, onSelect, onClose }: Props) {
                 })
               )}
               {listing.truncated && (
-                <li className="px-5 py-2 text-[10px] text-amber-300/80">
+                <li className="px-5 py-2 text-[10px] text-status-warning/80">
                   {t("picker.truncated")}
                 </li>
               )}
@@ -294,7 +294,7 @@ function Shortcut({
       onClick={onClick}
       className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded ${
         active
-          ? "bg-blue-500/15 text-blue-200 border border-blue-500/30"
+          ? "bg-blue-500/15 text-accent border border-blue-500/30"
           : "text-ink-faint hover:text-ink-dim hover:bg-bg-inset"
       }`}
     >

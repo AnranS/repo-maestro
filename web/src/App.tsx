@@ -2,6 +2,7 @@ import { Suspense, lazy, useEffect, useState } from "react"
 import type { RunState } from "./types"
 import { api } from "./api"
 import { ChatView } from "./components/ChatView"
+import { Dashboard } from "./components/Dashboard"
 import { SessionSidebar } from "./components/SessionSidebar"
 import { RunsSidebar } from "./components/RunsSidebar"
 import { SettingsModal } from "./components/SettingsModal"
@@ -31,6 +32,9 @@ const ArchitectureView = lazy(() =>
 const CodeGraphView = lazy(() =>
   import("./components/CodeGraphView").then((m) => ({ default: m.CodeGraphView })),
 )
+const DeliveriesView = lazy(() =>
+  import("./components/DeliveriesView").then((m) => ({ default: m.DeliveriesView })),
+)
 const DocsView = lazy(() =>
   import("./components/DocsView").then((m) => ({ default: m.DocsView })),
 )
@@ -39,6 +43,10 @@ export default function App() {
   // Subscribe to language changes so the whole tree re-renders on flip.
   useLang()
 
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    const current = document.documentElement.dataset.theme
+    return current === "light" ? "light" : "dark"
+  })
   const [tab, setTab] = useHashTab()
   const { state, runs, connected, runSummary } = useRunState()
   const {
@@ -56,6 +64,12 @@ export default function App() {
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [goalOpen, setGoalOpen] = useState(false)
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    document.documentElement.classList.toggle("dark", theme === "dark")
+    localStorage.setItem("maestro-theme", theme)
+  }, [theme])
 
   // Selecting a run from the sidebar. When it's the live/current run we keep
   // showing the SSE-updated `state`; for any older run we fetch its frozen
@@ -84,6 +98,8 @@ export default function App() {
       <Header
         tab={tab}
         setTab={setTab}
+        theme={theme}
+        onToggleTheme={() => setTheme((value) => (value === "dark" ? "light" : "dark"))}
         sessions={sessions}
         runSummary={runSummary}
         connected={connected}
@@ -107,6 +123,20 @@ export default function App() {
             so a crash in one view (a stale Suspense module, a malformed
             payload) can't take the whole app black. Switching tabs auto-
             resets the boundary so the next visit is fresh. */}
+        {tab === "dashboard" && (
+          <ErrorBoundary label="dashboard" resetKey={tab}>
+            <div className="min-h-0 flex-1 overflow-auto">
+              <Dashboard
+                state={state}
+                runs={runs}
+                onOpenRun={(runId) => {
+                  setSelectedRunId(runId ?? null)
+                  setTab("tasks")
+                }}
+              />
+            </div>
+          </ErrorBoundary>
+        )}
         {tab === "chat" && (
           <ErrorBoundary label="chat" resetKey={tab}>
             <div className="flex min-h-0 flex-1 flex-col md:flex-row">
@@ -142,6 +172,12 @@ export default function App() {
                   }
                   return currentSession
                 }}
+                liveRun={state}
+                onOpenRun={(runId) => {
+                  setSelectedRunId(runId)
+                  setTab("tasks")
+                }}
+                onOpenDashboard={() => setTab("dashboard")}
               />
             </div>
           </ErrorBoundary>
@@ -199,6 +235,18 @@ export default function App() {
           <ErrorBoundary label="codegraph" resetKey={tab}>
             <Suspense fallback={<LazyFallback />}>
               <CodeGraphView />
+            </Suspense>
+          </ErrorBoundary>
+        )}
+        {tab === "deliveries" && (
+          <ErrorBoundary label="deliveries" resetKey={tab}>
+            <Suspense fallback={<LazyFallback />}>
+              <DeliveriesView
+                onOpenRun={(runId) => {
+                  setSelectedRunId(runId)
+                  setTab("tasks")
+                }}
+              />
             </Suspense>
           </ErrorBoundary>
         )}

@@ -185,7 +185,9 @@ pub fn build_run_evidence(state: &RunState) -> RunEvidence {
                     kind: "trajectory".to_string(),
                     source: ArtifactSource::AgentTask,
                     task_id: Some(task.id.clone()),
-                    path: Some(path.clone()),
+                    // Run-relative ref, never the absolute on-disk `trajectory_path`
+                    // (the file lives at `<run>/trajectories/<task>.ndjson`).
+                    path: Some(format!("trajectories/{}.ndjson", task.id)),
                     uri: None,
                     name: Some(format!("{}.ndjson", task.id)),
                     bytes,
@@ -332,6 +334,63 @@ pub fn read_evidence_summary(run_dir: &Path) -> Option<RunEvidence> {
     let path = run_dir.join("evidence").join("summary.json");
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+/// F-124: audit-clean read of a run's persisted evidence (reuses the existing
+/// `RunEvidence` / `ArtifactManifest` ledger — no new ledger format). A
+/// present-but-corrupt `evidence/summary.json` OR `evidence/artifacts.json`
+/// (the artifact manifest) is an explicit error, NEVER silently rebuilt or
+/// treated as missing/empty — unlike [`read_evidence_summary`], which stays a
+/// best-effort helper for PR bodies. A MISSING summary returns `Ok(None)` so the
+/// caller can rebuild from `RunState`; an empty-but-valid summary returns
+/// `Ok(Some(..))` (a successful, empty projection).
+pub fn read_evidence_projection(run_dir: &Path) -> Result<Option<RunEvidence>> {
+    let evidence_dir = run_dir.join("evidence");
+    // A present artifact manifest must parse AND carry only run-local refs —
+    // corrupt OR an unsafe ref (absolute/`..`/`file:`) is an audit failure, not
+    // "no artifacts".
+    let manifest_path = evidence_dir.join("artifacts.json");
+    if manifest_path.exists() {
+        let text = std::fs::read_to_string(&manifest_path)
+            .with_context(|| format!("read {}", manifest_path.display()))?;
+        let manifest: ArtifactManifest = serde_json::from_str(&text)
+            .with_context(|| format!("corrupt artifact manifest {}", manifest_path.display()))?;
+        validate_artifact_refs_run_local(&manifest.artifacts)
+            .with_context(|| format!("unsafe artifact ref in {}", manifest_path.display()))?;
+    }
+    let summary_path = evidence_dir.join("summary.json");
+    if !summary_path.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&summary_path)
+        .with_context(|| format!("read {}", summary_path.display()))?;
+    let evidence: RunEvidence = serde_json::from_str(&text)
+        .with_context(|| format!("corrupt evidence summary {}", summary_path.display()))?;
+    // Validate refs read from the persisted ledger — valid JSON is not enough; a
+    // ref that resolves outside the run dir must be rejected (run-relative path
+    // or external uri only).
+    validate_artifact_refs_run_local(&evidence.artifact_refs)
+        .with_context(|| format!("unsafe artifact ref in {}", summary_path.display()))?;
+    for task in &evidence.tasks {
+        validate_artifact_refs_run_local(&task.artifact_refs).with_context(|| {
+            format!(
+                "unsafe artifact ref for task {:?} in {}",
+                task.id,
+                summary_path.display()
+            )
+        })?;
+    }
+    Ok(Some(evidence))
+}
+
+/// Reject any ref that is not run-local (reuses `ArtifactRef::run_local_violation`).
+fn validate_artifact_refs_run_local(refs: &[ArtifactRef]) -> Result<()> {
+    for r in refs {
+        if let Some(reason) = r.run_local_violation() {
+            anyhow::bail!("{reason}");
+        }
+    }
+    Ok(())
 }
 
 pub fn render_pr_body(state: &RunState) -> String {

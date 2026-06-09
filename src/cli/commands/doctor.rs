@@ -11,11 +11,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use tokio::process::Command;
 
-use crate::cli::{util, DoctorArgs};
+use crate::cli::{util, DoctorArgs, DoctorCommand};
 use crate::config::ProjectsConfig;
 use crate::paths;
 use crate::scheduler::worktree_policy::{WorktreePolicy, DENY_PATTERNS};
 use crate::scheduler::{RunLiveness, RunStatus};
+use crate::schema::runtime_health::{HealthStatus, RuntimeHealthReport};
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const STALE_PROJECTS_TMP_THRESHOLD: Duration = Duration::from_secs(5);
@@ -130,6 +131,12 @@ pub struct DoctorReport {
 }
 
 pub async fn run(args: DoctorArgs) -> Result<()> {
+    if let Some(DoctorCommand::Runtime(runtime)) = &args.command {
+        // honour the parent `--json` too: `maestro doctor --json runtime` must emit
+        // JSON, not the human report (a user who passed --json expects JSON on stdout).
+        return run_runtime(args.json || runtime.json).await;
+    }
+
     let report = build_report().await;
 
     if args.json {
@@ -142,6 +149,82 @@ pub async fn run(args: DoctorArgs) -> Result<()> {
         anyhow::bail!("doctor found {} failing check(s)", report.summary.failed);
     }
     Ok(())
+}
+
+/// `maestro doctor runtime [--json]` — the focused F-118 runtime-health view. The
+/// report is validated BEFORE any output so a self-inconsistent report surfaces as
+/// an internal error, never as half-structured JSON. Exit code follows the report:
+/// any failing check is non-zero; warnings alone stay zero.
+pub async fn run_runtime(json: bool) -> Result<()> {
+    let generated_at = chrono::Utc::now().to_rfc3339();
+    let report = crate::runtime_health::build_validated_report(generated_at)
+        .await
+        .context("internal error: runtime health report failed validation")?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", render_runtime_report(&report));
+    }
+
+    if report.summary.failed > 0 {
+        anyhow::bail!(
+            "runtime health found {} failing check(s)",
+            report.summary.failed
+        );
+    }
+    Ok(())
+}
+
+/// Issue-first text rendering (fail, warn, pass, skip) preserving the stable v1
+/// order within each status group, then a compact provider-probe summary.
+fn render_runtime_report(report: &RuntimeHealthReport) -> String {
+    let mut out = String::new();
+    out.push_str("maestro runtime health\n\n");
+    for status in [
+        HealthStatus::Fail,
+        HealthStatus::Warn,
+        HealthStatus::Pass,
+        HealthStatus::Skip,
+    ] {
+        for check in report.checks.iter().filter(|c| c.status == status) {
+            out.push_str(&format!(
+                "[{:<4}] {:<22} {}\n",
+                check.status.as_str().to_uppercase(),
+                check.label,
+                check.message
+            ));
+            if let Some(fix) = &check.fix {
+                out.push_str(&format!("       fix: {fix}\n"));
+            }
+        }
+    }
+    if !report.providers.is_empty() {
+        out.push_str("\nproviders:\n");
+        for p in &report.providers {
+            let dur = p
+                .probe
+                .duration_ms
+                .map(|ms| format!(" {ms}ms"))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "  {:<8} {:<5}{} {}\n",
+                p.id,
+                p.probe.status.as_str(),
+                dur,
+                p.probe.message
+            ));
+        }
+    }
+    let s = &report.summary;
+    out.push_str(&format!(
+        "\nsummary: {} pass, {} warn, {} fail, {} skip ({} total)\n",
+        s.passed, s.warnings, s.failed, s.skipped, s.total
+    ));
+    if let Some(top) = &s.top_issue {
+        out.push_str(&format!("top issue: {top}\n"));
+    }
+    out
 }
 
 pub async fn build_report() -> DoctorReport {
@@ -632,6 +715,49 @@ fn push_model_checks(checks: &mut Vec<DoctorCheck>, projects: Option<&ProjectsCo
     }
 }
 
+/// F-117: warning-only health for the current run's resume guard. Only flags an
+/// ABANDONED run whose descriptor cannot cleanly seed a resume (truncated/rewritten
+/// ledger, a settle since the descriptor, plan drift, missing/unsafe output
+/// snapshot, task-set mismatch, corrupt descriptor). A live run is skipped (its
+/// descriptor legitimately lags between settles), and a missing descriptor is not
+/// a warning (pre-F-117 or a just-created run). Never fails doctor.
+fn resume_descriptor_check(dir: &Path, state: &crate::scheduler::RunState) -> Option<DoctorCheck> {
+    if matches!(
+        crate::scheduler::liveness::classify_run(state),
+        RunLiveness::Live
+    ) {
+        return None;
+    }
+    let report = crate::scheduler::resume::validate_resume_target(dir, true).ok()?;
+    if report.has(crate::schema::resume::ResumeIssueCode::MissingDescriptor) {
+        return None;
+    }
+    // force=true so liveness/info codes drop out; only real integrity issues stay.
+    let problems: Vec<String> = report
+        .issues
+        .iter()
+        .filter(|i| i.code.blocks(true))
+        .map(|i| format!("[{}] {}", i.code.as_str(), i.detail))
+        .collect();
+    if problems.is_empty() {
+        return None;
+    }
+    let mut check = DoctorCheck::warn(
+        "runs",
+        "resume guard",
+        format!(
+            "run {} cannot be cleanly resumed ({} issue(s))",
+            report.run_id,
+            problems.len()
+        ),
+        "use `maestro rerun` if the run is terminal, otherwise re-run the goal",
+    );
+    for p in problems {
+        check = check.detail(p);
+    }
+    Some(check)
+}
+
 fn push_run_checks(checks: &mut Vec<DoctorCheck>) {
     let current = match paths::current_run_dir() {
         Ok(current) => current,
@@ -670,6 +796,9 @@ fn push_run_checks(checks: &mut Vec<DoctorCheck>) {
                 check.details.push(format!("spec: {}", state.spec));
                 checks.push(check);
                 checks.extend(schema_version_checks(&dir, false));
+                if let Some(c) = resume_descriptor_check(&dir, &state) {
+                    checks.push(c);
+                }
             }
             Err(e) => checks.push(DoctorCheck::warn(
                 "runs",
@@ -1132,6 +1261,56 @@ fn render_text_report(report: &DoctorReport, verbose: bool) -> String {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    fn mk_state(run_id: &str, pid: u32) -> crate::scheduler::RunState {
+        serde_json::from_value(serde_json::json!({
+            "run_id": run_id, "spec": "demo", "started_at": "2026-06-05T00:00:00Z",
+            "ended_at": null, "status": "running", "max_parallel": 1, "pid": pid,
+            "tasks": {}, "approvals_pending": [], "task_order": [],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn resume_descriptor_check_skips_live_run() {
+        // A live run's descriptor legitimately lags; never warn on it.
+        let temp = tempfile::tempdir().unwrap();
+        let state = mk_state("r1", std::process::id());
+        assert!(resume_descriptor_check(temp.path(), &state).is_none());
+    }
+
+    #[test]
+    fn resume_descriptor_check_silent_on_missing_descriptor() {
+        // Abandoned run, no RESUME.json (pre-F-117 / just created) -> not a warning.
+        let temp = tempfile::tempdir().unwrap();
+        let state = mk_state("r1", 999_999);
+        assert!(
+            resume_descriptor_check(temp.path(), &state).is_none(),
+            "missing descriptor is not a warning"
+        );
+    }
+
+    #[test]
+    fn resume_descriptor_check_warns_on_corrupt_descriptor() {
+        // Abandoned run + an unusable descriptor -> a (non-blocking) doctor warning.
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            crate::scheduler::resume::descriptor_path(temp.path()),
+            "{not json",
+        )
+        .unwrap();
+        let state = mk_state("r1", 999_999);
+        let check = resume_descriptor_check(temp.path(), &state).expect("warns");
+        assert_eq!(check.status, CheckStatus::Warn);
+        assert!(
+            check
+                .details
+                .iter()
+                .any(|d| d.contains("resume.schema_mismatch")),
+            "details: {:?}",
+            check.details
+        );
+    }
 
     #[test]
     fn summary_counts_statuses() {

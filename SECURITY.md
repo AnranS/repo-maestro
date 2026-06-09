@@ -6,7 +6,7 @@
 
 Instead, please report them privately via GitHub Security Advisories:
 
-1. Go to the repository's [Security tab](https://github.com/AnranS/repo-maestro/security/advisories).
+1. Go to the repository's [Security tab](https://github.com/AnranS/maestro/security/advisories).
 2. Click **Report a vulnerability**.
 3. Fill in the form with:
    - A description of the vulnerability and its impact.

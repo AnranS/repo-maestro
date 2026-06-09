@@ -138,6 +138,7 @@ mod tests {
             approvals_pending: vec![],
             task_order: vec!["T_x".into()],
             session_id: None,
+            delivery_id: None,
             usage: Default::default(),
             budget_tokens: None,
             pending_gate: None,
